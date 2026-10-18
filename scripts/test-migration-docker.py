@@ -155,6 +155,11 @@ class Smoke:
         raise SmokeFailure(f'Timed out waiting for {description}: {last}')
 
     def ready(self):
+        # Docker may allocate a different ephemeral host port after restart.
+        # Always read the current binding before making any readiness/login request.
+        binding = self.inspect('container', self.panel)['NetworkSettings']['Ports']['8080/tcp']
+        require(len(binding) == 1 and binding[0]['HostIp'] == '127.0.0.1', 'Panel was not published exclusively on loopback')
+        self.base = 'http://127.0.0.1:' + binding[0]['HostPort']
         self.wait('panel HTTP readiness', lambda: self.request('GET', '/api/auth/me', expected=(200, 401), timeout=3))
         _, response = self.request('POST', '/api/auth/login', {'username': self.username, 'password': self.password})
         require(response.get('user', {}).get('role') == 'admin', 'Login did not establish the test admin session')
@@ -298,9 +303,6 @@ class Smoke:
                 '-e', 'WOC_WATCHDOG_HEALTH_FAILS=0', '-e', 'WOC_ENABLE_GPU=0', self.args.panel_image]
         self.created_panel = True  # docker run can create a container even if start fails.
         self.docker(*args, env=env)
-        binding = self.inspect('container', self.panel)['NetworkSettings']['Ports']['8080/tcp']
-        require(len(binding) == 1 and binding[0]['HostIp'] == '127.0.0.1', 'Panel was not published exclusively on loopback')
-        self.base = 'http://127.0.0.1:' + binding[0]['HostPort']
         self.ready()
 
     def exercise(self, directory):
@@ -509,6 +511,15 @@ def main():
     except Exception as error:
         smoke.log('FAIL: ' + str(error))
         if smoke.created_panel:
+            try:
+                info = smoke.inspect('container', smoke.panel)
+                smoke.log('Test panel inspect: ' + json.dumps({
+                    'State': info.get('State'),
+                    'actualPorts': info.get('NetworkSettings', {}).get('Ports'),
+                    'Image': info.get('Image'),
+                }, ensure_ascii=False))
+            except Exception as inspect_error:
+                smoke.log('Cannot inspect test panel: ' + str(inspect_error))
             try:
                 logs = smoke.docker('logs', '--tail', '150', smoke.panel, check=False)
                 smoke.log('Test panel logs:\n' + (logs.stdout + logs.stderr)[-24000:])
