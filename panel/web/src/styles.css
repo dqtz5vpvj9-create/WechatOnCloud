@@ -2189,6 +2189,76 @@ button {
 }
 
 /* ── 数据卷管理（管理员）──────────────────────────────────── */
+.migration-modal {
+  width: 620px;
+  max-width: 100%;
+}
+.migration-copy {
+  margin: 0;
+  line-height: 1.6;
+}
+.migration-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+.migration-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 130px;
+  gap: 12px;
+}
+.migration-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+.migration-fields .field-label {
+  margin: 0;
+}
+.migration-state,
+.migration-check-result {
+  padding: 12px;
+  background: var(--trough, #edeef1);
+  border-radius: var(--r-small);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.migration-state dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 5px 14px;
+  margin: 10px 0 0;
+}
+.migration-state dt {
+  color: var(--muted);
+}
+.migration-state dd {
+  margin: 0;
+}
+.migration-check {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.migration-check .btn {
+  flex: none;
+}
+@media (max-width: 520px) {
+  .migration-fields {
+    grid-template-columns: 1fr;
+  }
+  .migration-check {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .migration-modal .modal-actions {
+    flex-wrap: wrap;
+  }
+}
+
 .vol-modal {
   width: 640px;
   max-width: 92vw;

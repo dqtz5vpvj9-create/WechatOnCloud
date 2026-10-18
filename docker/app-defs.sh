@@ -42,7 +42,9 @@ woc_app_def() {
       ;;
     *)
       APP_BIN=/config/wechat/opt/wechat/wechat
-      APP_LAUNCH="$APP_BIN"
+      # Only WeChat drops management/remote-desktop credentials from its own
+      # environment. The desktop services and other application types keep theirs.
+      APP_LAUNCH="/woc/wechat-env.sh $APP_BIN"
       APP_NAME=微信
       ;;
   esac

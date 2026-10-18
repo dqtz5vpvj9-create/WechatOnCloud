@@ -5,9 +5,26 @@ import http from 'node:http';
 import { PassThrough } from 'node:stream';
 import zlib from 'node:zlib';
 import { randomBytes } from 'node:crypto';
+import { createConnection } from 'node:net';
 import Docker from 'dockerode';
 import { tarArchive, tarEntry, tarFileStream, tarSingleFile, openTarStream, scanArchive, sniffArchive } from './tar.js';
-import { instanceAppType, getDesktopDark, type Instance } from './store.js';
+import { instanceAppType, getDesktopDark, listInstances, setInstanceMigration, setInstanceMigrationState, type Instance } from './store.js';
+import {
+  MIGRATION_CONTAINER_PORT,
+  MigrationError,
+  assertMigrationNatNetwork,
+  assertMigrationPortUnreserved,
+  describeMigrationContainer,
+  instanceMigrationConfig,
+  migrationContainerPorts,
+  migrationErrorMessage,
+  migrationMappingMatches,
+  migrationRecoveryImage,
+  parseMigrationConfig,
+  procHasMigrationListener,
+  publishedPortConflicts,
+  type MigrationConfig,
+} from './migration.js';
 
 // 实例镜像引用。版本耦合（架构守则 R1）：面板与实例镜像同一 release 同步出包、按同版本号
 // 互相验证——正式版面板把 :latest 改写为与自身相同的版本 tag（如 1.4.1），保证
@@ -496,6 +513,8 @@ function envList(inst: Instance): string[] {
   // 老实例无 appType → instanceAppType 回退 wechat；自定义应用额外透传启动命令。
   const appType = instanceAppType(inst);
   env.push(`WOC_APP_TYPE=${appType}`);
+  // 远程桌面页标题使用应用名；微信自身的初始环境由启动包装器另行过滤。
+  if (appType === 'wechat') env.push('TITLE=WeChat');
   if (appType === 'custom' && inst.customLaunch) env.push(`WOC_CUSTOM_LAUNCH=${inst.customLaunch}`);
   // 深色模式：作为新实例启动时的初始明暗下发给 autostart（autostart 据此设 portal color-scheme，
   // 微信等 Chromium 系应用即跟随系统深色）。开关由面板顶栏主题统一控制、持久化在 accounts.json，
@@ -644,6 +663,169 @@ export async function describeInstanceVolume(name: string): Promise<string> {
   }
 }
 
+// ---------- 手机聊天记录迁移端口（#121） ----------
+async function migrationDockerRead<T>(work: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new MigrationError('读取 Docker 状态超时，请稍后重试', 503)), 3500);
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
+
+async function migrationContainerInfo(inst: Instance): Promise<any | null> {
+  try {
+    return await migrationDockerRead(docker.getContainer(inst.containerName).inspect());
+  } catch (e: any) {
+    if (e?.statusCode === 404) return null;
+    throw new MigrationError(`无法读取实例容器状态：${migrationErrorMessage(e)}`, 503);
+  }
+}
+
+// 仅做 Docker/配置的已知占用检查，不能冒充宿主网卡及所有宿主进程的 bind 检查。
+// 最后的地址可用性检查由真正的 Docker start 完成；失败时走下面的回滚路径。
+export async function validateMigrationAvailability(config: MigrationConfig, inst?: Instance): Promise<void> {
+  assertMigrationPortUnreserved(config, listInstances(), inst?.id);
+  if (!config.enabled) return;
+  let containers: Docker.ContainerInfo[];
+  let network: any;
+  try {
+    [containers, network] = await Promise.all([
+      migrationDockerRead(docker.listContainers({ all: true })),
+      migrationDockerRead((async () => {
+        const net = await ensureNetwork();
+        return docker.getNetwork(net || 'bridge').inspect();
+      })()),
+    ]);
+  } catch (e) {
+    throw new MigrationError(`无法校验 Docker 端口和网络：${migrationErrorMessage(e)}`, 503);
+  }
+  assertMigrationNatNetwork(network);
+  for (const container of containers) {
+    if (inst && container.Names?.includes('/' + inst.containerName)) continue;
+    if (container.Ports?.some((port) => publishedPortConflicts(config, port))) {
+      throw new MigrationError('该宿主地址/端口已被另一个 Docker 容器发布，请更换端口', 409);
+    }
+  }
+}
+
+export async function instanceMigrationStatus(inst: Instance) {
+  const info = await migrationContainerInfo(inst);
+  const config = instanceMigrationConfig(inst);
+  return {
+    config,
+    actual: describeMigrationContainer(info, networkName),
+    applying: !!inst.migrationState?.applying,
+    error: inst.migrationState?.error || null,
+    pending: !migrationMappingMatches(config, info) ||
+      (!!info?.State?.Running && !migrationMappingMatches(config, info, true)),
+  };
+}
+
+export async function configureInstanceMigration(inst: Instance, raw: unknown): Promise<{ ok: true; applying: boolean }> {
+  const config = parseMigrationConfig(raw);
+  if (instanceAppType(inst) !== 'wechat') throw new MigrationError('聊天记录迁移仅支持微信实例');
+  if (lifecycleChains.has(inst.id) || inst.migrationState?.applying) {
+    throw new MigrationError('该实例正在重建或应用配置，请完成后再保存', 409);
+  }
+  const [info] = await Promise.all([
+    migrationContainerInfo(inst),
+    validateMigrationAvailability(config, inst),
+  ]);
+  // 上面的 Docker 读取期间可能有另一个请求开始操作；保存与入队之间不再 await。
+  if (lifecycleChains.has(inst.id) || inst.migrationState?.applying) {
+    throw new MigrationError('该实例正在重建或应用配置，请完成后再保存', 409);
+  }
+  const previousConfig = instanceMigrationConfig(inst);
+  const applying = !!info?.State?.Running &&
+    (!migrationMappingMatches(config, info) || !migrationMappingMatches(config, info, true));
+  const imageId = String(info?.Image || '');
+  if (applying && !imageId) throw new MigrationError('无法确定当前实例镜像，未修改配置', 503);
+  setInstanceMigration(inst.id, config, applying
+    ? { applying: true, error: null, previousConfig, imageId }
+    : { applying: false, error: null, imageId: migrationRecoveryImage(info, inst.migrationState) });
+  if (!applying) return { ok: true, applying: false }; // 停止的实例只保存，绝不因保存而启动。
+  void withLifecycle(inst.id, async () => {
+    let originalImage = imageId;
+    try {
+      const current = await migrationContainerInfo(inst);
+      // 外部 Docker 操作若刚停掉实例，也尊重当前停止状态，配置等下一次启动再应用。
+      if (!current?.State?.Running) {
+        setInstanceMigrationState(inst.id, { applying: false, error: null, imageId: String(current?.Image || originalImage) });
+        return;
+      }
+      originalImage = String(current.Image || imageId);
+      setInstanceMigrationState(inst.id, { applying: true, error: null, previousConfig, imageId: originalImage });
+      appendPanelLog('INFO', `实例「${inst.name}」开始应用聊天记录迁移端口配置（沿用原镜像）`);
+      await runInstanceNow(inst, { imageId: originalImage });
+      const after = await migrationContainerInfo(inst);
+      if (!after?.State?.Running || !migrationMappingMatches(config, after, true)) {
+        throw new Error('Docker 启动后的实际端口映射与保存配置不一致');
+      }
+      setInstanceMigrationState(inst.id, { applying: false, error: null, imageId: String(after.Image || originalImage) });
+      appendPanelLog('INFO', `实例「${inst.name}」聊天记录迁移端口配置已生效`);
+    } catch (e) {
+      const failure = migrationErrorMessage(e);
+      let recovery = '已恢复之前配置和原镜像的运行容器';
+      let configRestored = false;
+      try {
+        setInstanceMigration(inst.id, previousConfig, { applying: true, error: null, previousConfig: config, imageId: originalImage });
+        configRestored = true;
+        const current = await migrationContainerInfo(inst);
+        if (!current?.State?.Running || !migrationMappingMatches(previousConfig, current, true) || current.Image !== originalImage) {
+          await runInstanceNow(inst, { imageId: originalImage });
+        }
+        const restored = await migrationContainerInfo(inst);
+        if (!restored?.State?.Running || !migrationMappingMatches(previousConfig, restored, true)) {
+          throw new Error('恢复后的实例或映射未就绪');
+        }
+      } catch (restoreError) {
+        recovery = `${configRestored ? '已恢复之前配置，但容器恢复失败' : '恢复之前配置失败'}：${migrationErrorMessage(restoreError)}；请检查后启动实例`;
+      }
+      const error = migrationErrorMessage(`应用失败：${failure}；${recovery}`);
+      setInstanceMigrationState(inst.id, { applying: false, error, imageId: originalImage });
+      appendPanelLog('ERROR', `实例「${inst.name}」迁移端口${error}`);
+    }
+  }).catch((e) => {
+    // 例如持久化磁盘错误，仍尽量结束轮询并在已有面板日志里报告。
+    const error = migrationErrorMessage(e);
+    try { setInstanceMigrationState(inst.id, { applying: false, error, imageId: inst.migrationState?.imageId || imageId }); } catch { /* 磁盘不可写 */ }
+    appendPanelLog('ERROR', `实例「${inst.name}」迁移配置任务失败：${error}`);
+  });
+  return { ok: true, applying: true };
+}
+
+export async function checkInstanceMigration(inst: Instance): Promise<{ listening: boolean | null; reachable: boolean | null; error: string | null }> {
+  const info = await migrationContainerInfo(inst);
+  const actual = describeMigrationContainer(info, networkName);
+  if (!actual.running || !actual.containerIp) {
+    return { listening: null, reachable: null, error: '实例未运行或没有 IPv4 地址，请先启动并在微信中进入聊天记录迁移页面' };
+  }
+  const reachable = new Promise<boolean>((resolve) => {
+    // 目标只来自该实例的 Docker inspect；不接受客户端提供地址或端口。
+    const socket = createConnection({ host: actual.containerIp!, port: MIGRATION_CONTAINER_PORT });
+    const done = (value: boolean) => { socket.destroy(); resolve(value); };
+    socket.setTimeout(2000, () => done(false));
+    socket.once('connect', () => done(true));
+    socket.once('error', () => done(false));
+  });
+  let listening: boolean | null = null;
+  let error: string | null = null;
+  try {
+    const sockets = await migrationDockerRead(execCapture(inst, ['sh', '-c', 'cat /proc/net/tcp && { test ! -r /proc/net/tcp6 || cat /proc/net/tcp6; }'], 'root'));
+    listening = procHasMigrationListener(sockets);
+  } catch (e) {
+    error = `无法读取实例的监听状态：${migrationErrorMessage(e)}`;
+  }
+  return { listening, reachable: await reachable, error };
+}
+
 // 创建并启动一个微信实例容器。若同名容器已存在则先移除（仅容器，不动卷）。
 // keepImage（稳定性关键）：重启/自愈必须幂等——沿用该实例当前正在跑的镜像重建，
 // 绝不因"本地 :latest 恰好被某次拉取更新过"就悄悄换镜像（那等于一次没人要求的隐式升级；
@@ -654,22 +836,39 @@ export async function describeInstanceVolume(name: string): Promise<string> {
 const lifecycleChains = new Map<string, Promise<unknown>>();
 function withLifecycle<T>(instId: string, fn: () => Promise<T>): Promise<T> {
   const run = (lifecycleChains.get(instId) || Promise.resolve()).then(fn, fn);
-  lifecycleChains.set(instId, run.catch(() => undefined));
+  const tail = run.then(() => undefined, () => undefined);
+  lifecycleChains.set(instId, tail);
+  void tail.then(() => { if (lifecycleChains.get(instId) === tail) lifecycleChains.delete(instId); });
   return run;
 }
 export function runInstance(inst: Instance, opts?: { keepImage?: boolean }): Promise<void> {
   return withLifecycle(inst.id, () => runInstanceNow(inst, opts));
 }
-async function runInstanceNow(inst: Instance, opts?: { keepImage?: boolean }): Promise<void> {
+async function runInstanceNow(inst: Instance, opts?: { keepImage?: boolean; imageId?: string }): Promise<void> {
+  const migrationConfig = instanceMigrationConfig(inst);
+  const migrationPorts = migrationContainerPorts(migrationConfig);
+  if (migrationConfig.enabled && instanceAppType(inst) !== 'wechat') throw new MigrationError('聊天记录迁移仅支持微信实例');
   const net = await ensureNetwork();
+  if (migrationConfig.enabled) {
+    assertMigrationNatNetwork(await migrationDockerRead(docker.getNetwork(net || 'bridge').inspect()));
+  }
   const existing = docker.getContainer(inst.containerName);
   const info: any = await existing.inspect().catch(() => null);
-  const imageOverride: string | undefined = opts?.keepImage && info?.Image ? String(info.Image) : undefined;
+  const imageOverride: string | undefined = opts?.imageId ||
+    (opts?.keepImage ? migrationRecoveryImage(info, inst.migrationState) : undefined);
   // 沿用旧镜像重建时无需 ensureImage（镜像 id 一定在本地——容器刚在用它）；
   // 也避免"离线 + 本地无 :latest"时连重启都失败。
   // 必须先确保目标镜像在本地、再删旧容器：此前先删后拉，升级时拉不到新镜像（面板刚更新、本地只有旧版本号的镜像、
   // 网络又不通）就会把旧容器删掉却建不出新的，实例直接没了；现在拉取失败时旧容器原样保留。
   if (!imageOverride) await ensureImage();
+  else await docker.getImage(imageOverride).inspect(); // 恢复保存的原镜像也须先确认存在，再动当前容器。
+  if (inst.migration !== undefined && info?.Image) {
+    // 停止实例保存后，下次 start 才重建。若 bind/start 失败删除了容器，后续重试仍有原镜像 ID。
+    setInstanceMigrationState(inst.id, {
+      ...(inst.migrationState || { applying: false, error: null }),
+      imageId: String(info.Image),
+    });
+  }
   if (info) {
     try {
       // 删除前先把旧容器最后日志快照进持久日志，否则随容器删除就看不到"上次为何停/崩"。
@@ -689,6 +888,7 @@ async function runInstanceNow(inst: Instance, opts?: { keepImage?: boolean }): P
     SecurityOpt: ['seccomp=unconfined'],
     ShmSize: SHM_SIZE,
     RestartPolicy: { Name: 'unless-stopped' },
+    PortBindings: migrationPorts.portBindings,
     // 日志硬上限：docker 默认 json-file 无大小限制，应用崩溃循环（每 2s 刷错误）会把宿主磁盘
     // 无限吃掉（群晖用户反馈"一下子 1TB 没了"的元凶之一）。每实例封顶 20MB×2。
     LogConfig: { Type: 'json-file', Config: { 'max-size': '20m', 'max-file': '2' } },
@@ -722,7 +922,7 @@ async function runInstanceNow(inst: Instance, opts?: { keepImage?: boolean }): P
     // 反代靠容器名 name 寻址，与此 hostname 无关。
     Hostname: realisticHostname(inst.id),
     Env: envList(inst),
-    ExposedPorts: { '3000/tcp': {} },
+    ExposedPorts: { '3000/tcp': {}, ...migrationPorts.exposedPorts },
     HostConfig: hostConfig,
   };
   // 自定义网络时，MAC 须写到对应 endpoint 上（新版 docker 弃用顶层 MacAddress）；默认网络则用顶层。
@@ -731,9 +931,22 @@ async function runInstanceNow(inst: Instance, opts?: { keepImage?: boolean }): P
   } else {
     (createOpts as any).MacAddress = mac;
   }
-  const container = await docker.createContainer(createOpts);
+  let container: Docker.Container | undefined;
   try {
+    container = await docker.createContainer(createOpts);
     await container.start();
+    const started = migrationConfig.enabled || inst.migration !== undefined ? await container.inspect() : null;
+    if (migrationConfig.enabled && !migrationMappingMatches(migrationConfig, started, true)) {
+      throw new Error('Docker 未实际发布指定的聊天记录迁移端口');
+    }
+    if (inst.migration !== undefined && started?.Image) {
+      // 显式升级成功后更新为实际新镜像，避免恢复记录仍指向上一个版本。
+      setInstanceMigrationState(inst.id, {
+        ...(inst.migrationState || { applying: false, error: null }),
+        imageId: String(started.Image),
+        ...(!inst.migrationState?.applying ? { error: null } : {}),
+      });
+    }
     appendInstanceLog(inst.id, '容器已启动');
     // 容器重建后恢复持久化的字体配置 / xsettingsd
     restoreFontFromVolume(inst).catch(() => {});
@@ -741,9 +954,16 @@ async function runInstanceNow(inst: Instance, opts?: { keepImage?: boolean }): P
     // 启动失败但容器已被创建出来（Created 状态），不清理的话会成为"幽灵容器"——
     // 它仍占着卷名 woc-data-<id>，让后续删卷报 409。修复 #23 时发现 4 个此类残留。
     try {
-      await container.remove({ force: true });
+      await container?.remove({ force: true });
     } catch {
       /* 容器已被外部移走或正在被清理，忽略 */
+    }
+    if (inst.migration !== undefined && !inst.migrationState?.applying) {
+      setInstanceMigrationState(inst.id, {
+        applying: false,
+        error: `迁移配置对应的容器启动失败：${migrationErrorMessage(e)}；请修正配置后重新启动`,
+        imageId: imageOverride || inst.migrationState?.imageId,
+      });
     }
     throw e;
   }
@@ -752,20 +972,39 @@ async function runInstanceNow(inst: Instance, opts?: { keepImage?: boolean }): P
 // 确保实例容器在运行：缺失则按需创建（不会重建已有卷），停止则启动。
 // 只有容器确实不存在（404）才新建：Docker 一时连不上（socket-proxy 还没起来）时若也当成「不存在」去重建，
 // 重建那一刻网络多半也没探测到，实例会落到默认 bridge、桌面 502。
-export async function ensureRunning(inst: Instance): Promise<void> {
+export function ensureRunning(inst: Instance): Promise<void> {
+  return withLifecycle(inst.id, () => ensureRunningNow(inst));
+}
+async function ensureRunningNow(inst: Instance): Promise<void> {
   const c = docker.getContainer(inst.containerName);
   let info: any;
   try {
     info = await c.inspect();
   } catch (e: any) {
     if (e?.statusCode !== 404) throw e;
-    return runInstance(inst);
+    return runInstanceNow(inst, { keepImage: true });
+  }
+  const config = instanceMigrationConfig(inst);
+  if (config.enabled) {
+    const mode = info.HostConfig?.NetworkMode;
+    const currentNetwork = !mode || mode === 'default'
+      ? Object.keys(info.NetworkSettings?.Networks || {})[0] || 'bridge'
+      : mode;
+    assertMigrationNatNetwork(await migrationDockerRead(docker.getNetwork(currentNetwork).inspect()));
+  }
+  // 停止期间保存的端口不能用 c.start() 应用；须按声明重建，且沿用原镜像。
+  if (!migrationMappingMatches(config, info) ||
+      (info.State?.Running && !migrationMappingMatches(config, info, true))) {
+    return runInstanceNow(inst, { keepImage: true });
   }
   if (info.State?.Running) return;
   try {
     await c.start();
+    if (config.enabled && !migrationMappingMatches(config, await c.inspect(), true)) {
+      throw new Error('Docker 未实际发布指定的聊天记录迁移端口');
+    }
   } catch {
-    await runInstance(inst);
+    await runInstanceNow(inst, { keepImage: true });
   }
 }
 
@@ -916,30 +1155,34 @@ export async function regenInstanceMachineId(inst: Instance): Promise<void> {
 }
 
 // 停止实例容器（保留容器与数据卷，可再启动）。
-export async function stopInstance(inst: Instance): Promise<void> {
-  try {
-    await docker.getContainer(inst.containerName).stop({ t: 5 } as any);
-    appendInstanceLog(inst.id, '容器已停止');
-  } catch {
-    /* 已停止或不存在 */
-  }
+export function stopInstance(inst: Instance): Promise<void> {
+  return withLifecycle(inst.id, async () => {
+    try {
+      await docker.getContainer(inst.containerName).stop({ t: 5 } as any);
+      appendInstanceLog(inst.id, '容器已停止');
+    } catch {
+      /* 已停止或不存在 */
+    }
+  });
 }
 
-export async function removeInstance(inst: Instance, purgeVolume: boolean): Promise<void> {
-  try {
-    const c = docker.getContainer(inst.containerName);
-    await c.remove({ force: true });
-  } catch {
-    /* 容器可能已不存在 */
-  }
-  if (purgeVolume) {
+export function removeInstance(inst: Instance, purgeVolume: boolean): Promise<void> {
+  return withLifecycle(inst.id, async () => {
     try {
-      await removeVolumeWithData(inst.volumeName);
+      const c = docker.getContainer(inst.containerName);
+      await c.remove({ force: true });
     } catch {
-      /* 卷可能不存在 */
+      /* 容器可能已不存在 */
     }
-    deleteInstanceLog(inst.id); // 彻底删除时一并清掉持久日志
-  }
+    if (purgeVolume) {
+      try {
+        await removeVolumeWithData(inst.volumeName);
+      } catch {
+        /* 卷可能不存在 */
+      }
+      deleteInstanceLog(inst.id); // 彻底删除时一并清掉持久日志
+    }
+  });
 }
 
 // 列出"未被任何容器引用的 woc-data-* 数据卷"。判定改为 docker 真实视角（不再仅看 store），

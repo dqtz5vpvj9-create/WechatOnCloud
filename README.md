@@ -46,6 +46,8 @@
 
 ## 核心特性
 
+**本 fork 的新增功能**：持久化手机聊天记录迁移的 TCP 8015 映射，以及微信启动环境过滤。使用方法见 [fork 构建与部署](doc/fork-build.md)、[聊天记录迁移](doc/chat-migration.md)、[环境过滤范围](doc/runtime-environment.md)。下方原快速开始仍包含上游镜像；部署本 fork 请先按 fork 构建说明操作。
+
 - 🗂️ **多实例** — 一个面板管理多个独立实例，每个实例独立容器 + 独立数据卷，互不干扰。
 - 🌐 **多应用（微信 + QQ + 浏览器）** — 新建实例时可选**微信**、**QQ**（腾讯官方 Linux 版）或 **Chromium 浏览器**；浏览器实例用来登录 Telegram / X / Instagram 等网页版社媒，登录态写进数据卷、常驻云端、多端共享。
 - 👥 **多端共享 + 权限** — 多浏览器 / 设备共享同一会话；子账号体系，按账号分配可访问的实例（RBAC）。
@@ -64,6 +66,9 @@
 
 | 文档 | 内容 |
 |------|------|
+| [本 fork 构建与部署](doc/fork-build.md) | 从本仓库构建面板和实例镜像，更新已有部署 |
+| [手机聊天记录迁移](doc/chat-migration.md) | TCP 8015 持久化配置、重建行为、路由和网络诊断 |
+| [微信启动环境过滤](doc/runtime-environment.md) | 已减少的管理元数据、仍可见的环境特征与验证范围 |
 | [运行原理与 Docker 指南](doc/运行原理.md) | 工作原理 + 架构图；面向 Docker 新手的逐步拆解、常用命令、架构自动适配 |
 | [部署与运维](doc/部署与运维.md) | 数据持久化、常见问题排查、忘记超管密码的离线找回、目录结构 |
 | [设备伪装与风控应对](doc/设备伪装.md) | 唯一 machine-id / 真实 hostname / os-release 伪装；账号被微信强制退出循环时怎么办 |
@@ -77,20 +82,19 @@
 
 > 需已安装 Docker（含 Compose 插件）。x86_64 / arm64 均可。不熟悉 Docker？先读 [运行原理与 Docker 指南](doc/运行原理.md)。
 
-`docker-compose.yml` 默认引用 **Docker Hub** 上的镜像 `docker.io/gloridust/{woc-panel,wechat-on-cloud}`（同时也发布到 GHCR 作为备用源）。
-**这两个镜像需先存在**——要么官方已发布（你能直接拉取），要么你在本地自行构建。二选一：
+本 fork 的修改需要构建本仓库中的面板与实例镜像。`docker-compose.yml` 默认引用上游 **Docker Hub** 镜像，因此运行本 fork 时还要加上 `docker-compose.fork.yml`。详细更新、版本保留与回退步骤见 [fork 构建与部署](doc/fork-build.md)。
 
-**方式 A · 本地自构建（官方尚未发布镜像时用这个）**
+**方式 A · 运行本 fork（本地构建）**
 
 ```bash
-git clone https://github.com/Gloridust/WechatOnCloud.git WechatOnCloud
+git clone https://github.com/dqtz5vpvj9-create/WechatOnCloud.git WechatOnCloud
 cd WechatOnCloud
 cp .env.example .env            # 至少改掉默认密码 WOC_PASSWORD
-./scripts/build-local.sh        # 构建面板 + 微信实例镜像，打成 compose 用的同名标签
-docker compose up -d            # compose 默认优先用本地镜像，不会再去远端拉
+WOC_IMAGE_PREFIX=ghcr.io/dqtz5vpvj9-create WOC_VERSION=dev-local ./scripts/build-local.sh
+docker compose -f docker-compose.yml -f docker-compose.fork.yml up -d
 ```
 
-**方式 B · 拉取官方镜像（推荐，无需 clone 整个仓库）**
+**方式 B · 拉取上游镜像（不含本 fork 的改动）**
 
 部署**只需要 `docker-compose.yml` 这一个文件**——它用 `image:` 直接拉官方镜像，面板数据放在该文件旁自动创建的 `./data-panel` 目录，不依赖仓库里的其它文件。
 

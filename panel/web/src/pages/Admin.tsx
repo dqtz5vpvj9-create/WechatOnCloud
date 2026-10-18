@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import Cropper from 'react-easy-crop';
 import { api, APP_LABELS, appProfile, fmtUploadSize, type PanelUser, type InstanceWithStatus, type VolEntry, type AppType, type VersionInfo } from '../api';
 import { InstanceIcon, ICON_CHOICES } from '../AppIcon';
+import { InstanceMigration } from '../InstanceMigration';
 import { useUI, PasswordInput } from '../ui';
 import { useAuth } from '../auth';
 
@@ -275,6 +276,7 @@ export default function Admin({ onOpenMenu, onChangePassword }: { onOpenMenu: ()
   const [deleteInst, setDeleteInst] = useState<InstanceWithStatus | null>(null); // 删除实例弹窗
   const [renameInst, setRenameInst] = useState<InstanceWithStatus | null>(null); // 重命名实例弹窗
   const [securityInst, setSecurityInst] = useState<InstanceWithStatus | null>(null); // 安全（内存阈值）弹窗
+  const [migrationInst, setMigrationInst] = useState<InstanceWithStatus | null>(null);
   const [volumeInst, setVolumeInst] = useState<InstanceWithStatus | null>(null); // 数据卷管理弹窗
   const [iconInst, setIconInst] = useState<InstanceWithStatus | null>(null); // 图标编辑弹窗
   const [acting, setActing] = useState<Record<string, string>>({}); // 实例 id → 进行中的动作文案（启动中/升级中…）
@@ -634,6 +636,7 @@ export default function Admin({ onOpenMenu, onChangePassword }: { onOpenMenu: ()
                     onAssign={() => setAssignInst(inst)}
                     onDelete={() => setDeleteInst(inst)}
                     onSecurity={() => setSecurityInst(inst)}
+                    onMigration={() => setMigrationInst(inst)}
                     onVolume={() => setVolumeInst(inst)}
                     onIcon={() => setIconInst(inst)}
                   />
@@ -891,6 +894,9 @@ export default function Admin({ onOpenMenu, onChangePassword }: { onOpenMenu: ()
       )}
       {volumeInst && (
         <VolumeManager inst={volumeInst} onClose={() => setVolumeInst(null)} onChanged={load} />
+      )}
+      {isAdmin && migrationInst && (
+        <InstanceMigration key={migrationInst.id} inst={migrationInst} onClose={() => setMigrationInst(null)} onChanged={load} />
       )}
       {iconInst && (
         <InstanceIconEditor
@@ -1274,6 +1280,7 @@ function InstanceAdminCard({
   onAssign,
   onDelete,
   onSecurity,
+  onMigration,
   onVolume,
   onIcon,
 }: {
@@ -1291,6 +1298,7 @@ function InstanceAdminCard({
   onAssign: () => void;
   onDelete: () => void;
   onSecurity: () => void;
+  onMigration: () => void;
   onVolume: () => void;
   onIcon: () => void;
 }) {
@@ -1429,6 +1437,11 @@ function InstanceAdminCard({
                   <button className="btn-text" onClick={onSecurity} title="内存阈值自愈">
                     安全
                   </button>
+                  {(inst.appType ?? 'wechat') === 'wechat' && (
+                    <button className="btn-text" onClick={onMigration} title="手机聊天记录迁移：配置 TCP 8015 映射并检测当前端口">
+                      聊天记录迁移
+                    </button>
+                  )}
                   <button className="btn-text" onClick={onIcon} title="设置实例图标：内置图标 / 上传图片裁剪">
                     图标
                   </button>

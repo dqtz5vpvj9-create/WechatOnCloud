@@ -2,6 +2,12 @@ import { chmodSync, readFileSync, writeFileSync, existsSync, mkdirSync, renameSy
 import { dirname } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
+import {
+  assertMigrationPortUnreserved,
+  parseMigrationConfig,
+  type MigrationConfig,
+  type MigrationApplyState,
+} from './migration.js';
 
 export type Role = 'admin' | 'sub';
 
@@ -58,6 +64,10 @@ export interface Instance {
   // hard：内存超此值时，无论是否有人在会话都重启（防止 OOM 拖垮宿主）。
   memSoftLimitMB?: number;
   memHardLimitMB?: number;
+  // 管理员显式开启的手机聊天记录迁移端口；缺省禁用。所有重建从此声明生成映射。
+  migration?: MigrationConfig;
+  // 每实例最多保留一次应用状态，错误限长；不新增任务/日志文件。
+  migrationState?: MigrationApplyState;
 }
 
 // 面板级全局设置（持久化进 accounts.json）。
@@ -105,6 +115,18 @@ export function initStore() {
   }
   // 迁移：补齐新增字段，兼容旧账号文件
   if (!Array.isArray(data.instances)) data.instances = [];
+  for (const inst of data.instances) {
+    if (inst.migrationState?.applying) {
+      // 应用中断时优先恢复旧声明；实际容器可能已完成重建，GET 会显示两者是否一致。
+      // 保留原镜像 ID，容器恰好在被删除后中断时仍能按原版本恢复。
+      if (inst.migrationState.previousConfig) inst.migration = inst.migrationState.previousConfig;
+      inst.migrationState = {
+        applying: false,
+        error: '上次迁移端口应用被面板重启中断，已恢复之前的配置；请检查实际映射和实例状态',
+        imageId: inst.migrationState.imageId,
+      };
+    }
+  }
   for (const u of data.users) {
     if (!Array.isArray(u.allowedInstances)) u.allowedInstances = [];
   }
@@ -294,6 +316,24 @@ export function findInstance(id: string) {
   return data.instances.find((i) => i.id === id);
 }
 
+export function setInstanceMigration(id: string, config: MigrationConfig, state: MigrationApplyState = { applying: false, error: null }) {
+  const inst = findInstance(id);
+  if (!inst) throw new Error('实例不存在');
+  if (instanceAppType(inst) !== 'wechat') throw new Error('聊天记录迁移仅支持微信实例');
+  const normalized = parseMigrationConfig(config);
+  assertMigrationPortUnreserved(normalized, data.instances, id);
+  inst.migration = normalized;
+  inst.migrationState = state;
+  persist();
+}
+
+export function setInstanceMigrationState(id: string, state: MigrationApplyState) {
+  const inst = findInstance(id);
+  if (!inst) return;
+  inst.migrationState = state;
+  persist();
+}
+
 // 当前用户可见的实例（admin 全部，sub 按 allowedInstances）
 export function userInstances(u: User) {
   if (u.role === 'admin') return listInstances();
@@ -329,8 +369,14 @@ export function createInstance(
   allowedUserIds: string[] = [],
   reuseVolumeName?: string,
   appType: AppType = 'wechat',
+  migration?: MigrationConfig,
 ) {
   const type: AppType = APP_TYPES.includes(appType) ? appType : 'wechat';
+  const migrationConfig = migration === undefined ? undefined : parseMigrationConfig(migration);
+  if (migrationConfig) {
+    if (type !== 'wechat') throw new Error('聊天记录迁移仅支持微信实例');
+    assertMigrationPortUnreserved(migrationConfig, data.instances);
+  }
   let id = randomBytes(5).toString('hex'); // 10 hex chars
   let volumeName = `woc-data-${id}`;
   if (reuseVolumeName) {
@@ -352,6 +398,7 @@ export function createInstance(
     kasmPassword: randomBytes(24).toString('hex'),
     createdAt: new Date().toISOString(),
     createdBy,
+    ...(migrationConfig ? { migration: migrationConfig } : {}),
   };
   data.instances.push(inst);
   // 把访问权限写到选中的账户上

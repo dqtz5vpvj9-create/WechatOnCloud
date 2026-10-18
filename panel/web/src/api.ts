@@ -65,6 +65,29 @@ export interface MemLimits {
   watchdogEnabled: boolean;
   intervalSec: number;
 }
+export interface MigrationConfig {
+  enabled: boolean;
+  bindAddress: string;
+  hostPort: number;
+}
+export interface MigrationStatus {
+  config: MigrationConfig;
+  actual: {
+    bindings: { hostIp: string; hostPort: number; containerPort: 8015; protocol: 'tcp' }[];
+    containerIp: string | null;
+    subnet: string | null;
+    running: boolean;
+  };
+  applying: boolean;
+  error: string | null;
+  pending: boolean;
+}
+export interface MigrationCheck {
+  listening: boolean | null;
+  // 面板到本实例 containerIp:8015；不检查宿主发布端口或手机路径。
+  reachable: boolean | null;
+  error: string | null;
+}
 export interface InstanceWithStatus extends PanelInstance {
   runtime: RuntimeState;
   wechat: WechatStatus;
@@ -278,6 +301,15 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ soft, hard }),
     }),
+  getInstanceMigration: (id: string) =>
+    req<MigrationStatus>(`/api/admin/instances/${id}/migration`),
+  setInstanceMigration: (id: string, config: MigrationConfig) =>
+    req<{ ok: boolean; applying: boolean }>(`/api/admin/instances/${id}/migration`, {
+      method: 'PUT',
+      body: JSON.stringify(config),
+    }),
+  checkInstanceMigration: (id: string) =>
+    req<MigrationCheck>(`/api/admin/instances/${id}/migration/check`, { method: 'POST' }),
   listOrphanVolumes: () =>
     req<{ volumes: { name: string; createdAt?: string; sizeBytes?: number }[] }>('/api/admin/orphan-volumes'),
   deleteOrphanVolume: (name: string) =>

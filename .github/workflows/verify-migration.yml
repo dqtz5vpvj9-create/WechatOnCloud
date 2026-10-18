@@ -1,0 +1,43 @@
+name: verify-migration
+
+on:
+  push:
+    branches: [main, fix/migration-and-runtime-metadata]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            panel/server/package-lock.json
+            panel/web/package-lock.json
+      - name: Install dependencies
+        run: |
+          npm ci --prefix panel/server
+          npm ci --prefix panel/web
+      - name: Type checks and targeted regressions
+        run: |
+          npm run check --prefix panel/server
+          npm test --prefix panel/server
+          npm run check --prefix panel/web
+          npm test --prefix panel/web
+          python3 -m unittest discover -s docker/tests -v
+          bash -n docker/wechat-env.sh docker/app-defs.sh
+      - name: Build panel artifact
+        run: docker build --provenance=false --sbom=false --build-arg WOC_VERSION=dev-ci -t woc-panel-migration:test panel
+      - name: Verify real Docker migration lifecycle
+        run: python3 scripts/test-migration-docker.py

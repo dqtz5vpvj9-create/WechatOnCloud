@@ -1,0 +1,8 @@
+# 本 fork 的本地构建覆盖层。先构建两个镜像，再与 docker-compose.yml 一起使用。
+# 文档：doc/fork-build.md。镜像仅在本地构建，不意味着 GHCR 已发布对应标签。
+services:
+  panel:
+    image: ghcr.io/dqtz5vpvj9-create/woc-panel:${WOC_FORK_TAG:-dev-local}
+    pull_policy: never
+    environment:
+      WOC_WECHAT_IMAGE: ghcr.io/dqtz5vpvj9-create/wechat-on-cloud:${WOC_FORK_TAG:-dev-local}

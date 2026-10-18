@@ -32,6 +32,7 @@ import {
   setInstanceIcon,
   setInstanceUsers,
   publicInstance,
+  instanceAppType,
   getDesktopDark,
   setDesktopDark,
   APP_TYPES,
@@ -106,7 +107,12 @@ import {
   applyFont,
   getAppliedFont,
   getFontFamily,
+  validateMigrationAvailability,
+  configureInstanceMigration,
+  instanceMigrationStatus,
+  checkInstanceMigration,
 } from './docker.js';
+import { parseMigrationConfig, migrationErrorMessage, type MigrationConfig } from './migration.js';
 import { createSession, getSession, destroySession, destroyUserSessions, SESSION_TTL_MS } from './sessions.js';
 import {
   parseHost,
@@ -546,12 +552,22 @@ app.post('/api/instances/:id/clientlog', async (req, reply) => {
 app.post('/api/admin/instances', async (req, reply) => {
   const admin = requireAdmin(req, reply);
   if (!admin) return;
-  const { name, reuseVolume, appType } = (req.body as any) ?? {};
+  const { name, reuseVolume, appType, migration } = (req.body as any) ?? {};
   const allowedUserIds = Array.isArray((req.body as any)?.allowedUserIds) ? (req.body as any).allowedUserIds : [];
   // 名称可留空（自动命名为「微信 1」这类，见 store.ts）；新建弹窗的占位文字一直写着「留空自动命名」，此前却必填
   const instName = typeof name === 'string' ? name.trim() : '';
   if (instName.length > 30) return reply.code(400).send({ error: '实例名称最多 30 个字符' });
   const type: AppType = APP_TYPES.includes(appType) ? appType : 'wechat';
+  let migrationConfig: MigrationConfig | undefined;
+  if (migration !== undefined) {
+    if (type !== 'wechat') return reply.code(400).send({ error: '聊天记录迁移仅支持微信实例' });
+    try {
+      migrationConfig = parseMigrationConfig(migration);
+      await validateMigrationAvailability(migrationConfig);
+    } catch (e: any) {
+      return reply.code(e?.statusCode || 400).send({ error: migrationErrorMessage(e) });
+    }
+  }
   // 复用卷：必须以 woc-data- 开头，且不能被现存实例占用。后端先校验，避免坏名穿透到 docker run。
   let reuseVolumeName: string | undefined;
   if (reuseVolume) {
@@ -563,7 +579,13 @@ app.post('/api/admin/instances', async (req, reply) => {
     }
     reuseVolumeName = reuseVolume;
   }
-  const inst = createInstance(instName, admin.id, allowedUserIds, reuseVolumeName, type);
+  let inst: Instance;
+  try {
+    // store 再检查声明的端口保留，封住并发创建/保存之间的竞态。
+    inst = createInstance(instName, admin.id, allowedUserIds, reuseVolumeName, type, migrationConfig);
+  } catch (e: any) {
+    return reply.code(e?.statusCode || 400).send({ error: migrationErrorMessage(e) });
+  }
   appendPanelLog(
     'INFO',
     `创建实例「${inst.name}」(${type}, id=${inst.id}) by ${admin.username}${reuseVolumeName ? ` · 复用卷 ${reuseVolumeName}` : ''} → 开始创建容器（镜像缺失会自动拉取，首次较慢）`,
@@ -691,6 +713,55 @@ app.put('/api/admin/instances/:id/mem-limits', async (req, reply) => {
   }
 });
 
+// 手机聊天记录迁移：仅管理员配置固定 8015/tcp，VNC 端口仍仅供反代。
+function migrationInstance(req: FastifyRequest, reply: FastifyReply): Instance | null {
+  if (!requireAdmin(req, reply)) return null;
+  const inst = findInstance((req.params as any).id);
+  if (!inst) { reply.code(404).send({ error: '实例不存在' }); return null; }
+  if (instanceAppType(inst) !== 'wechat') {
+    reply.code(400).send({ error: '聊天记录迁移仅支持微信实例' });
+    return null;
+  }
+  return inst;
+}
+
+app.get('/api/admin/instances/:id/migration', async (req, reply) => {
+  const inst = migrationInstance(req, reply);
+  if (!inst) return;
+  try {
+    return await instanceMigrationStatus(inst);
+  } catch (e: any) {
+    return reply.code(e?.statusCode || 503).send({ error: migrationErrorMessage(e) });
+  }
+});
+
+app.put('/api/admin/instances/:id/migration', { bodyLimit: 2048 }, async (req, reply) => {
+  const inst = migrationInstance(req, reply);
+  if (!inst) return;
+  if (upgradingIds.has(inst.id) || upgradeAllState.running) {
+    return reply.code(409).send({ error: '实例升级正在进行，请完成后再修改迁移端口' });
+  }
+  try {
+    const result = await configureInstanceMigration(inst, req.body);
+    return reply.code(result.applying ? 202 : 200).send(result);
+  } catch (e: any) {
+    return reply.code(e?.statusCode || 503).send({ error: migrationErrorMessage(e) });
+  }
+});
+
+app.post('/api/admin/instances/:id/migration/check', { bodyLimit: 2048 }, async (req, reply) => {
+  const inst = migrationInstance(req, reply);
+  if (!inst) return;
+  if (req.body !== undefined && req.body !== null) {
+    return reply.code(400).send({ error: '检测接口不接受请求正文或自定义目标' });
+  }
+  try {
+    return await checkInstanceMigration(inst);
+  } catch (e: any) {
+    return reply.code(e?.statusCode || 503).send({ error: migrationErrorMessage(e) });
+  }
+});
+
 // 重置实例的设备 machine-id（仅管理员）：滚一个全新的唯一设备身份并重启实例。
 // 用于某微信账号被腾讯按"设备风险"标记、登录即被踢时，像"换台新设备"一样恢复。会触发重新扫码登录。
 app.post('/api/admin/instances/:id/regen-machine-id', async (req, reply) => {
@@ -796,6 +867,7 @@ app.post('/api/admin/instances/:id/upgrade', async (req, reply) => {
   if (!requireAdmin(req, reply)) return;
   const inst = findInstance((req.params as any).id);
   if (!inst) return reply.code(404).send({ error: '实例不存在' });
+  if (inst.migrationState?.applying) return reply.code(409).send({ error: '该实例正在应用迁移端口配置' });
   if (upgradeAllState.running) return reply.code(409).send({ error: '「一键升级全部实例」进行中，请等它完成' });
   if (upgradingIds.has(inst.id)) return reply.code(409).send({ error: '该实例已在升级中' });
   upgradingIds.add(inst.id);
@@ -847,6 +919,9 @@ app.get('/api/admin/instances/upgrade-status', async (req, reply) => {
 let upgradeAllState = { running: false, total: 0, done: 0, failed: 0, phase: '' };
 app.post('/api/admin/instances/upgrade-all', async (req, reply) => {
   if (!requireAdmin(req, reply)) return;
+  if (listInstances().some((inst) => inst.migrationState?.applying)) {
+    return reply.code(409).send({ error: '有实例正在应用迁移端口配置，请完成后再升级' });
+  }
   if (upgradeAllState.running) return reply.code(409).send({ error: '一键升级正在进行中，请等待完成' });
   if (upgradingIds.size) return reply.code(409).send({ error: '有实例正在单独升级，请等它完成' });
   upgradeAllState = { running: true, total: 0, done: 0, failed: 0, phase: '拉取最新实例镜像…' };
