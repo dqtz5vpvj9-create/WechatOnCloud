@@ -87,6 +87,7 @@ class Smoke:
         self.instance_volume = 'woc-data-' + self.instance_id
         self.fixture_ref = '127.0.0.1:1/woc-migration-fixture-' + self.run_id + ':dev'
         self.image_ids = []
+        self.fixture_revision_refs = []
         self.fixture_build_started = False
         self.created_volumes = []
         self.created_network = False
@@ -181,6 +182,12 @@ class Smoke:
 
     def lifecycle(self, action):
         self.request('POST', f'/api/admin/instances/{self.instance_id}/{action}', timeout=self.args.timeout)
+        if action in ('start', 'restart'):
+            self.wait('instance running after ' + action, self.running_instance)
+
+    def running_instance(self):
+        info = self.inspect('container', self.instance, missing_ok=True)
+        return info if info and info.get('State', {}).get('Running') else None
 
     def checkpoint(self, title):
         self.passed.append(title)
@@ -216,11 +223,15 @@ class Smoke:
     def build_fixture(self, directory, revision):
         self.log(f'Building temporary fixture revision {revision}…')
         iid_file = directory / f'image-{revision}.txt'
+        # Preserve immutable revision tags, matching the deployment's versioned
+        # images. Docker's containerd store can lose ID lookup for an untagged image.
+        revision_ref = f'{self.fixture_ref}-revision-{revision}'
+        self.fixture_revision_refs.append(revision_ref)
         self.fixture_build_started = True
         self.docker('build', '--pull=false', '--provenance=false', '--sbom=false', '--label', f'{OWNER_LABEL}={self.run_id}',
                     '--build-arg', f'FIXTURE_BASE={self.args.fixture_base}',
                     '--build-arg', f'FIXTURE_REV={revision}', '--build-arg', f'FIXTURE_RUN={self.run_id}',
-                    '--iidfile', str(iid_file), '-t', self.fixture_ref, str(directory), timeout=600)
+                    '--iidfile', str(iid_file), '-t', self.fixture_ref, '-t', revision_ref, str(directory), timeout=600)
         image_id = iid_file.read_text().strip()
         self.image_ids.append(image_id)
         return image_id
@@ -315,10 +326,7 @@ class Smoke:
         }, timeout=self.args.timeout)
         require(result.get('instance', {}).get('id') == self.instance_id, 'Creation did not reuse the precisely owned test volume')
         # Creation returns immediately while the upstream provisioning task runs.
-        def created():
-            info = self.inspect('container', self.instance, missing_ok=True)
-            return info if info and info.get('State', {}).get('Running') else None
-        self.wait('asynchronous instance creation', created)
+        self.wait('asynchronous instance creation', self.running_instance)
         self.docker('exec', '--user', 'root', self.instance, 'node', '-e',
                     'require("node:fs").writeFileSync(process.argv[1], process.argv[2])', SENTINEL, self.run_id)
         original = self.identity()
@@ -474,7 +482,7 @@ class Smoke:
             attempt('remove test network', remove_network)
         # Remove the unique tag first, then exact built image IDs. Never force-remove
         # images that another container started using, and never remove the base image.
-        owned_images = [self.fixture_ref, *reversed(self.image_ids)] if self.fixture_build_started else []
+        owned_images = [self.fixture_ref, *reversed(self.fixture_revision_refs), *reversed(self.image_ids)] if self.fixture_build_started else []
         for image in owned_images:
             def remove_image(ref=image):
                 info = self.inspect('image', ref, missing_ok=True)

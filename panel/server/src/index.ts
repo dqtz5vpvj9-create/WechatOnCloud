@@ -534,7 +534,8 @@ function startProvision(inst: Instance, what: '创建' | '重试创建'): void {
   appendInstanceLog(inst.id, `开始${what}容器（本地没有实例镜像时会先拉取，首次可能要几分钟）`);
   void (async () => {
     try {
-      await runInstance(inst);
+      // Retry is a recovery action: retain the image saved before a failed migration start.
+      await runInstance(inst, { keepImage: true });
       setInstanceCreateError(inst.id, null);
       appendPanelLog('INFO', `${what}实例「${inst.name}」(id=${inst.id}) 成功`);
     } catch (e: any) {
