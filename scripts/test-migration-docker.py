@@ -314,6 +314,11 @@ class Smoke:
             'name': 'migration-smoke', 'appType': 'wechat', 'reuseVolume': self.instance_volume,
         }, timeout=self.args.timeout)
         require(result.get('instance', {}).get('id') == self.instance_id, 'Creation did not reuse the precisely owned test volume')
+        # Creation returns immediately while the upstream provisioning task runs.
+        def created():
+            info = self.inspect('container', self.instance, missing_ok=True)
+            return info if info and info.get('State', {}).get('Running') else None
+        self.wait('asynchronous instance creation', created)
         self.docker('exec', '--user', 'root', self.instance, 'node', '-e',
                     'require("node:fs").writeFileSync(process.argv[1], process.argv[2])', SENTINEL, self.run_id)
         original = self.identity()
