@@ -1,0 +1,41 @@
+<!doctype html><html><body>
+<div id="noVNC_container"><canvas role="img" aria-label="远程桌面" tabindex="0" width="600" height="350" style="background:#def"></canvas></div>
+<textarea id="noVNC_keyboardinput" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none"></textarea>
+<button id="explicit-paste">显式读取剪贴板</button>
+<script type="module">
+  import { setCapture } from '/events.js';
+  const canvas = document.querySelector('canvas');
+  const keyboard = document.getElementById('noVNC_keyboardinput');
+  const bit = button => button === 1 ? 4 : button === 2 ? 2 : 1 << button;
+  const state = window.inputTest = { events: [], mask: 0, autoRead: true, reentrant: false, pasted: '', dropped: '' };
+  // Match KasmVNC's focus listener order and use its real capture overlay.
+  // The receiver records what reaches the remote input boundary.
+  canvas.addEventListener('mousedown', event => {
+    if (state.autoRead) void navigator.clipboard.read().catch(() => {});
+    keyboard.focus();
+    if (state.reentrant) {
+      state.reentrant = false;
+      canvas.dispatchEvent(new MouseEvent('mouseup', { ...point(event), button: event.button, buttons: 0 }));
+    }
+  });
+  for (const type of ['mousedown', 'mouseup', 'mousemove']) {
+    canvas.addEventListener(type, event => {
+      if (type === 'mousedown') { setCapture(canvas); state.mask |= bit(event.button); }
+      if (type === 'mouseup') state.mask &= ~bit(event.button);
+      state.events.push({ type, mask: state.mask, x: event.clientX, y: event.clientY, button: event.button });
+      event.stopPropagation();
+      event.preventDefault();
+    });
+  }
+  function point(event) { return { bubbles: true, cancelable: true, clientX: event.clientX, clientY: event.clientY }; }
+  state.send = (type, options = {}) => {
+    const target = type !== 'mousedown' && document.captureElement ? document.getElementById('noVNC_mouse_capture_elem') : canvas;
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 100, clientY: 100, button: 0, buttons: 0, ...options });
+    if (options.timestamp !== undefined) Object.defineProperty(event, 'timeStamp', { value: options.timestamp });
+    target.dispatchEvent(event);
+  };
+  document.addEventListener('paste', event => { state.pasted = event.clipboardData.getData('text/plain'); });
+  document.addEventListener('drop', async event => { event.preventDefault(); state.dropped = await event.dataTransfer.files[0].text(); });
+  document.getElementById('explicit-paste').onclick = () => navigator.clipboard.readText();
+  state.ready = true;
+</script></body></html>

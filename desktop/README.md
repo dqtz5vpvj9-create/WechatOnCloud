@@ -11,6 +11,7 @@
 - 再次启动时唤醒已有窗口，避免产生多个实例
 - 全局快捷键 Windows `Alt+W` / macOS `Option+W`：前台时隐藏，隐藏或后台时唤起
 - 文件可直接拖入「文件传输」上传；下载保存到系统「下载」文件夹并提示结果，同名文件自动编号
+- macOS 无感输入兼容：修正触摸板轻点的按下／松开乱序，松开后停止远端拖动；点击画面不会请求读取本机剪贴板，使用 `Command+V` 粘贴
 - 新消息在 Windows 任务栏或 macOS Dock 显示未读数字，托盘／菜单栏图标闪烁并发送系统通知
 - 微信免打扰会话由服务端过滤，不触发桌面提醒
 - 托盘悬浮窗使用真实头像和紧凑双行列表；按会话标识累计新消息，同名会话独立显示，超过五行可滚动
@@ -35,6 +36,10 @@ npm run test:e2e
 分别运行 `npx e2e run tests/native-files.e2e.ts` 和 `npx e2e run tests/shortcut.e2e.ts`，验证文件拖入、原生下载落盘、同名文件保护和系统级 Alt+W。每条命令创建独立的原生应用会话。测试使用生成的文件及隔离 API，不发送微信消息。全局快捷键测试需要 Alt+W 未被其它进程占用；正式应用拥有该快捷键时，先退出正式应用再运行测试。
 
 真实云端文件往返测试：设置 `WOC_E2E_PROFILE=app` 和 `WOC_LIVE_FILES_INSTANCE=<已授权实例 ID>` 后运行 `npx e2e run tests/native-files-live.e2e.ts`。复用已有登录态，只上传生成的测试文件，校验下载内容后删除该测试文件。
+
+WebKit 输入回归：`npx playwright install webkit` 后运行 `npx e2e run --config e2e.webkit.config.ts`。测试使用 KasmVNC 原版鼠标捕获模块，覆盖触摸板事件乱序、焦点重入、丢失松开、正常拖动、连续点击、多按钮、剪贴板与文件拖入。设置 `WOC_INPUT_GUARD=0` 可验证修复前的失败。乱序事件由测试重放，物理触摸板与具体输入法的行为仍以设备实际事件为准。
+
+Safari 和桌面壳共用 `panel/web/public/webkit-input.js`。异常修正会向现有实例日志写入少量 `[webkit-input v1]` 事件证据（按钮、时间戳、输入模式），不包含按键、剪贴板或聊天内容。相关上游报告：[WebKit #219670](https://bugs.webkit.org/show_bug.cgi?id=219670#c32)、[Tauri #7219](https://github.com/tauri-apps/tauri/issues/7219)。
 
 ## Windows 构建
 

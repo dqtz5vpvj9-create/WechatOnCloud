@@ -6,6 +6,7 @@ on:
     branches: [main, 'desktop/**']
     paths:
       - 'desktop/**'
+      - 'panel/web/public/webkit-input.js'
       - '.github/workflows/desktop-macos.yml'
 
 permissions:
@@ -47,6 +48,17 @@ jobs:
         run: |
           cargo fmt --manifest-path src-tauri/Cargo.toml --check
           cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - name: Verify WebKit remote input
+        run: |
+          npx playwright install webkit
+          npx e2e run --config e2e.webkit.config.ts --output .e2e/webkit-ci
+      - name: Upload WebKit input evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yunwei-webkit-input-tests
+          path: desktop/.e2e/webkit-ci/
+          if-no-files-found: ignore
       - name: Build universal macOS app and DMG
         run: npm run build -- --ci --target universal-apple-darwin --bundles app,dmg
       - name: Verify and package artifacts

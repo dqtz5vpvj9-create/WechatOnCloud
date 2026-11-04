@@ -680,10 +680,14 @@ pub fn run() {
                 .iter()
                 .find(|w| w.label == MAIN_WINDOW)
                 .expect("main window config must exist");
-            WebviewWindowBuilder::from_config(app, config)?
+            let main = WebviewWindowBuilder::from_config(app, config)?
                 .initialization_script(include_str!("download-status.js"))
-                .on_download(downloads::handle)
-                .build()?;
+                .on_download(downloads::handle);
+            #[cfg(target_os = "macos")]
+            let main = main.initialization_script_for_all_frames(include_str!(
+                "../../../panel/web/public/webkit-input.js"
+            ));
+            main.build()?;
 
             let result = app.global_shortcut().on_shortcut("Alt+W", |app, _, event| {
                 let state = app.state::<TaskbarState>();
