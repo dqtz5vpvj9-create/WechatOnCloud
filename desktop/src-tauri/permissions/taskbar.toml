@@ -1,0 +1,34 @@
+[[permission]]
+identifier = "allow-set-taskbar-unread"
+description = "Allows the 云微 web client to update its taskbar or Dock unread badge."
+commands.allow = ["set_taskbar_unread"]
+
+[[permission]]
+identifier = "allow-set-desktop-notification"
+description = "Allows the 云微 web client to deliver a filtered WeChat notification to its native desktop shell."
+commands.allow = ["set_desktop_notification"]
+
+[[permission]]
+identifier = "allow-get-taskbar-unread-state"
+description = "Allows automated verification of the 云微 taskbar unread state."
+commands.allow = ["get_taskbar_unread_state"]
+
+[[permission]]
+identifier = "allow-set-desktop-default-route"
+description = "Allows the 云微 web client to set the WeChat route opened from the tray icon."
+commands.allow = ["set_desktop_default_route"]
+
+[[permission]]
+identifier = "allow-set-tray-preview-hovered"
+description = "Allows the local tray preview to keep itself open while hovered."
+commands.allow = ["set_tray_preview_hovered"]
+
+[[permission]]
+identifier = "allow-open-tray-message"
+description = "Allows the local tray preview to open a validated WeChat message route."
+commands.allow = ["open_tray_message"]
+
+[[permission]]
+identifier = "allow-show-tray-preview-for-test"
+description = "Exercises native tray preview layout only when launched with an automation port."
+commands.allow = ["show_tray_preview_for_test"]

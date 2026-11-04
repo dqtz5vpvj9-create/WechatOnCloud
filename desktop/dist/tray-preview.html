@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>微信未读消息</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
+      body { padding: 6px; font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; color: #222; user-select: none; }
+      .panel {
+        height: 100%; overflow: hidden; display: flex; flex-direction: column; background: #fff;
+        border: 1px solid #dedede; border-radius: 4px;
+        box-shadow: 0 2px 5px #00000018;
+      }
+      .header {
+        flex: 0 0 32px; padding: 0 12px; display: flex; align-items: center; justify-content: space-between;
+        border-bottom: 1px solid #ededed; font-size: 12px; font-weight: 400; color: #666;
+      }
+      .header-count { color: #999; font-size: 11px; }
+      .messages { min-height: 0; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; scrollbar-color: #d7d7d7 transparent; }
+      .message {
+        width: 100%; height: 60px; padding: 10px 12px; border: 0;
+        background: transparent; display: grid; grid-template-columns: 36px minmax(0, 1fr) auto;
+        align-items: center; column-gap: 10px; text-align: left; color: inherit; font: inherit; cursor: default;
+      }
+      .message:hover { background: #f2f2f2; }
+      .message:active { background: #e8e8e8; }
+      .message:focus-visible { outline: 2px solid #07b75c; outline-offset: -2px; }
+      .avatar {
+        position: relative; width: 36px; height: 36px; border-radius: 4px; display: grid; place-items: center;
+        overflow: hidden; background: #eceeed; color: #a4aaa7;
+      }
+      .avatar svg { width: 24px; height: 24px; }
+      .avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #eceeed; }
+      .content { display: grid; gap: 1px; min-width: 0; }
+      .title, .body { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .title { font-size: 13px; line-height: 20px; }
+      .body { color: #929292; font-size: 11px; line-height: 17px; }
+      .badge {
+        min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; display: grid; place-items: center;
+        background: #fa5151; color: #fff; font: 10px/16px "Segoe UI", sans-serif;
+      }
+    </style>
+  </head>
+  <body>
+    <section class="panel" aria-label="云微新消息">
+      <header class="header"><span>云微</span><span class="header-count" role="status"></span></header>
+      <div class="messages" aria-label="会话列表"></div>
+    </section>
+    <script>
+      const invoke = window.__TAURI__.core.invoke;
+      const count = document.querySelector('.header-count');
+      const messages = document.querySelector('.messages');
+
+      window.renderTrayPreview = (payload) => {
+        count.textContent = `${payload.count} 条新消息`;
+        const scrollTop = messages.scrollTop;
+        messages.replaceChildren(...payload.messages.slice().reverse().map((message) => {
+          const row = document.createElement('button');
+          row.className = 'message';
+          row.type = 'button';
+          const avatar = document.createElement('span');
+          avatar.className = 'avatar';
+          avatar.setAttribute('aria-hidden', 'true');
+          avatar.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3a9 9 0 0 0-7.3 14.3L3.5 21l4.1-1.1A9 9 0 1 0 12 3Zm-3 7a1 1 0 1 1 0 2 1 1 0 0 1 0-2Zm6 0a1 1 0 1 1 0 2 1 1 0 0 1 0-2Z"/></svg>';
+          if (typeof message.avatarUrl === 'string' && /^https:\/\//i.test(message.avatarUrl)) {
+            const picture = document.createElement('img');
+            picture.alt = '';
+            picture.referrerPolicy = 'no-referrer';
+            picture.addEventListener('error', () => picture.remove(), { once: true });
+            picture.src = message.avatarUrl;
+            avatar.append(picture);
+          }
+          const content = document.createElement('span');
+          content.className = 'content';
+          const title = document.createElement('span');
+          title.className = 'title';
+          title.textContent = message.title || '微信新消息';
+          const body = document.createElement('span');
+          body.className = 'body';
+          body.textContent = message.body || '你有一条新消息';
+          content.append(title, body);
+          const badge = document.createElement('span');
+          badge.className = 'badge';
+          badge.textContent = message.count > 99 ? '99+' : String(message.count || 1);
+          row.append(avatar, content, badge);
+          row.setAttribute('aria-label', `${message.title}，${message.count || 1} 条新消息`);
+          row.addEventListener('click', () => invoke('open_tray_message', { url: message.url }));
+          return row;
+        }));
+        messages.scrollTop = scrollTop;
+      };
+
+      document.body.addEventListener('mouseenter', () => invoke('set_tray_preview_hovered', { hovered: true }));
+      document.body.addEventListener('mouseleave', () => invoke('set_tray_preview_hovered', { hovered: false }));
+    </script>
+  </body>
+</html>

@@ -1,0 +1,6 @@
+/.cargo-home/
+/.e2e/
+/test-results/
+/artifacts/
+!/dist/
+!/dist/index.html

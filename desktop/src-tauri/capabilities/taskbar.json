@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "yunwei-taskbar",
+  "description": "Grants the deployed 云微 UI access to native unread and tray commands.",
+  "windows": ["main", "tray-preview"],
+  "remote": {
+    "urls": ["https://wechat.tail.lixinrui000.cn/*"]
+  },
+  "permissions": [
+    "allow-set-taskbar-unread",
+    "allow-set-desktop-notification",
+    "allow-set-desktop-default-route",
+    "allow-set-tray-preview-hovered",
+    "allow-open-tray-message",
+    "allow-get-taskbar-unread-state",
+    "allow-show-tray-preview-for-test"
+  ],
+  "platforms": ["windows", "macOS"]
+}

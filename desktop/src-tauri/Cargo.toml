@@ -1,0 +1,22 @@
+[package]
+name = "yunwei"
+version = "0.1.0"
+description = "云微桌面客户端"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+name = "yunwei_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+reqwest = { version = "0.12", features = ["blocking"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-notification = "2"
+tauri-plugin-single-instance = "2"

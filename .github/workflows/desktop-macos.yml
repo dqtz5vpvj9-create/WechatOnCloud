@@ -1,0 +1,73 @@
+name: desktop-macos
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'desktop/**']
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/desktop-macos.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: desktop
+    env:
+      CARGO_TERM_COLOR: always
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install Rust targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+      - name: Install desktop dependencies
+        run: npm ci
+      - name: Check formatting and native logic
+        run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml --check
+          cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - name: Build universal macOS app and DMG
+        run: npm run build -- --ci --target universal-apple-darwin --bundles app,dmg
+      - name: Verify and package artifacts
+        run: |
+          set -euo pipefail
+          bundle_dir=src-tauri/target/universal-apple-darwin/release/bundle
+          app_path="$bundle_dir/macos/云微.app"
+          lipo -verify_arch arm64 x86_64 "$app_path/Contents/MacOS/yunwei"
+          codesign --verify --deep --strict "$app_path"
+          mkdir -p artifacts
+          ditto -c -k --sequesterRsrc --keepParent "$app_path" artifacts/yunwei-macos-universal.app.zip
+          for dmg in "$bundle_dir"/dmg/*.dmg; do
+            hdiutil verify "$dmg"
+            cp "$dmg" artifacts/
+          done
+          printf 'Commit: %s\nArchitectures: arm64, x86_64\nMinimum macOS: 12.0\nSigning: ad hoc, not notarized\n' "$GITHUB_SHA" > artifacts/BUILD-INFO.txt
+          cd artifacts
+          shasum -a 256 ./*.dmg ./*.zip > SHA256SUMS.txt
+      - name: Upload macOS installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: yunwei-macos-universal
+          path: desktop/artifacts/
+          if-no-files-found: error
+          retention-days: 30
