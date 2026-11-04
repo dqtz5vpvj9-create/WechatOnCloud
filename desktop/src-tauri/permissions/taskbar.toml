@@ -32,3 +32,8 @@ commands.allow = ["open_tray_message"]
 identifier = "allow-show-tray-preview-for-test"
 description = "Exercises native tray preview layout only when launched with an automation port."
 commands.allow = ["show_tray_preview_for_test"]
+
+[[permission]]
+identifier = "allow-get-desktop-runtime-state"
+description = "Reads native window and shortcut state only in an automation instance."
+commands.allow = ["get_desktop_runtime_state"]

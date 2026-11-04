@@ -40,6 +40,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri -> target
+          cache-on-failure: true
       - name: Install desktop dependencies
         run: npm ci
       - name: Check formatting and native logic
@@ -53,8 +54,22 @@ jobs:
           set -euo pipefail
           bundle_dir=src-tauri/target/universal-apple-darwin/release/bundle
           app_path="$bundle_dir/macos/云微.app"
-          lipo -verify_arch arm64 x86_64 "$app_path/Contents/MacOS/yunwei"
+          lipo "$app_path/Contents/MacOS/yunwei" -verify_arch arm64 x86_64
           codesign --verify --deep --strict "$app_path"
+          "$app_path/Contents/MacOS/yunwei" > "$RUNNER_TEMP/yunwei-startup.log" 2>&1 &
+          app_pid=$!
+          trap 'kill "$app_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..8}; do
+            sleep 1
+            if ! kill -0 "$app_pid" 2>/dev/null; then
+              cat "$RUNNER_TEMP/yunwei-startup.log"
+              echo '::error::Packaged app exited during startup'
+              exit 1
+            fi
+          done
+          kill "$app_pid"
+          wait "$app_pid" || true
+          trap - EXIT
           mkdir -p artifacts
           ditto -c -k --sequesterRsrc --keepParent "$app_path" artifacts/yunwei-macos-universal.app.zip
           for dmg in "$bundle_dir"/dmg/*.dmg; do

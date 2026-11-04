@@ -34,6 +34,7 @@ export default {
           env: {
             WOC_E2E_CDP_PORT: cdpPort,
             WOC_E2E_PROFILE: process.env.WOC_E2E_PROFILE ?? path.join(root, '.e2e', 'webview-profile'),
+            WOC_E2E_DOWNLOAD_DIR: path.join(root, '.e2e', 'native-downloads'),
             WOC_DESKTOP_EXE:
               process.env.WOC_DESKTOP_EXE ?? path.join(root, 'src-tauri', 'target', 'release', 'yunwei.exe'),
           },

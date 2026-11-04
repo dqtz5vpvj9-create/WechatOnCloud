@@ -94,6 +94,7 @@ test('native tray preview fits, accumulates session counts, shows avatars and op
       }
     });
     await expect.poll(() => preview.locator('.message').count()).toBe(6);
+    await expect.poll(() => preview.evaluate(() => innerHeight)).toBe(346);
     const overflow = await preview.evaluate(() => {
       const list = document.querySelector('.messages')!;
       return { height: innerHeight, scrollHeight: list.scrollHeight, clientHeight: list.clientHeight };

@@ -13,7 +13,8 @@
     "allow-set-tray-preview-hovered",
     "allow-open-tray-message",
     "allow-get-taskbar-unread-state",
-    "allow-show-tray-preview-for-test"
+    "allow-show-tray-preview-for-test",
+    "allow-get-desktop-runtime-state"
   ],
   "platforms": ["windows", "macOS"]
 }

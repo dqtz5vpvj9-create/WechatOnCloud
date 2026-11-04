@@ -8,7 +8,10 @@ use tauri::{
     AppHandle, LogicalSize, Manager, PhysicalPosition, Position, Rect, RunEvent, Size, State,
     UserAttentionType, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
+
+mod downloads;
 
 const MAIN_WINDOW: &str = "main";
 const TRAY_PREVIEW_WINDOW: &str = "tray-preview";
@@ -28,6 +31,9 @@ struct TaskbarState {
     tray_messages: Mutex<Vec<TrayMessage>>,
     tray_preview_hovered: AtomicBool,
     tray_rect: Mutex<Option<Rect>>,
+    shortcut_down: AtomicBool,
+    shortcut_registered: AtomicBool,
+    shortcut_events: AtomicU32,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -352,6 +358,55 @@ fn show_main_window(app: &AppHandle) {
     let _ = window.unminimize();
     let _ = window.show();
     let _ = window.set_focus();
+    let _ = window.as_ref().set_focus();
+}
+
+fn main_window_is_foreground(window: &WebviewWindow) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        #[link(name = "user32")]
+        extern "system" {
+            fn GetForegroundWindow() -> *mut std::ffi::c_void;
+        }
+        // WebView2 can retain keyboard focus in a child HWND; compare the real
+        // top-level foreground window instead of Tao's cached focus events.
+        window
+            .hwnd()
+            .is_ok_and(|handle| handle.0 == unsafe { GetForegroundWindow() })
+    }
+    #[cfg(not(target_os = "windows"))]
+    window.is_focused().unwrap_or(false)
+}
+
+fn toggle_main_window(app: &AppHandle) {
+    if let Some(preview) = app.get_webview_window(TRAY_PREVIEW_WINDOW) {
+        let _ = preview.hide();
+    }
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+        if window.is_visible().unwrap_or(false) && main_window_is_foreground(&window) {
+            let _ = window.hide();
+        } else {
+            show_main_window(app);
+        }
+    }
+}
+
+#[tauri::command]
+fn get_desktop_runtime_state(app: AppHandle) -> Result<serde_json::Value, String> {
+    if automation_port().is_none() {
+        return Err("automation is disabled".to_owned());
+    }
+    let window = app
+        .get_webview_window(MAIN_WINDOW)
+        .ok_or("main window unavailable")?;
+    Ok(serde_json::json!({
+        "visible": window.is_visible().unwrap_or(false),
+        "focused": main_window_is_foreground(&window),
+        "minimized": window.is_minimized().unwrap_or(false),
+        "shortcutRegistered": app.state::<TaskbarState>().shortcut_registered.load(Ordering::Relaxed),
+        "shortcutEvents": app.state::<TaskbarState>().shortcut_events.load(Ordering::Relaxed),
+        "shortcutDown": app.state::<TaskbarState>().shortcut_down.load(Ordering::Relaxed),
+    }))
 }
 
 // Notifications always open the instance's WeChat desktop, including URLs
@@ -591,7 +646,9 @@ fn start_backend_recovery(app: AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let automation_enabled = configure_automation();
-    let builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build());
     let builder = if automation_enabled {
         builder
     } else {
@@ -604,6 +661,7 @@ pub fn run() {
 
     let app = builder
         .manage(TaskbarState::default())
+        .manage(downloads::Downloads::default())
         .invoke_handler(tauri::generate_handler![
             set_taskbar_unread,
             set_desktop_notification,
@@ -611,9 +669,41 @@ pub fn run() {
             set_tray_preview_hovered,
             open_tray_message,
             get_taskbar_unread_state,
-            show_tray_preview_for_test
+            show_tray_preview_for_test,
+            get_desktop_runtime_state
         ])
         .setup(|app| {
+            let config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|w| w.label == MAIN_WINDOW)
+                .expect("main window config must exist");
+            WebviewWindowBuilder::from_config(app, config)?
+                .initialization_script(include_str!("download-status.js"))
+                .on_download(downloads::handle)
+                .build()?;
+
+            let result = app.global_shortcut().on_shortcut("Alt+W", |app, _, event| {
+                let state = app.state::<TaskbarState>();
+                match event.state {
+                    ShortcutState::Pressed => {
+                        state.shortcut_events.fetch_add(1, Ordering::Relaxed);
+                        if !state.shortcut_down.swap(true, Ordering::Relaxed) {
+                            toggle_main_window(app);
+                        }
+                    }
+                    ShortcutState::Released => state.shortcut_down.store(false, Ordering::Relaxed),
+                }
+            });
+            app.state::<TaskbarState>()
+                .shortcut_registered
+                .store(result.is_ok(), Ordering::Relaxed);
+            if let Err(error) = result {
+                eprintln!("Could not register Alt/Option+W: {error}");
+            }
+
             WebviewWindowBuilder::new(
                 app,
                 TRAY_PREVIEW_WINDOW,

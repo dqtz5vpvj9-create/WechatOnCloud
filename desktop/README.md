@@ -9,6 +9,8 @@
 - 单击或双击托盘图标恢复微信桌面；点击悬浮窗消息或系统通知打开对应实例的微信桌面
 - 托盘菜单提供“打开云微”和“退出”
 - 再次启动时唤醒已有窗口，避免产生多个实例
+- 全局快捷键 Windows `Alt+W` / macOS `Option+W`：前台时隐藏，隐藏或后台时唤起
+- 文件可直接拖入「文件传输」上传；下载保存到系统「下载」文件夹并提示结果，同名文件自动编号
 - 新消息在 Windows 任务栏或 macOS Dock 显示未读数字，托盘／菜单栏图标闪烁并发送系统通知
 - 微信免打扰会话由服务端过滤，不触发桌面提醒
 - 托盘悬浮窗使用真实头像和紧凑双行列表；按会话标识累计新消息，同名会话独立显示，超过五行可滚动
@@ -29,6 +31,10 @@ npm run test:e2e
 测试默认使用 `.e2e/webview-profile` 隔离登录态。设置 `WOC_E2E_PROFILE=app` 可操作桌面应用的正式配置目录。
 
 悬浮窗回归测试无需账号：`npx e2e run tests/tray-preview.e2e.ts`。测试通过隔离实例调用真实悬浮逻辑，验证计数、头像、尺寸、滚动和点击，截图保存到 `test-results/tray-preview/`。
+
+分别运行 `npx e2e run tests/native-files.e2e.ts` 和 `npx e2e run tests/shortcut.e2e.ts`，验证文件拖入、原生下载落盘、同名文件保护和系统级 Alt+W。每条命令创建独立的原生应用会话。测试使用生成的文件及隔离 API，不发送微信消息。全局快捷键测试需要 Alt+W 未被其它进程占用；正式应用拥有该快捷键时，先退出正式应用再运行测试。
+
+真实云端文件往返测试：设置 `WOC_E2E_PROFILE=app` 和 `WOC_LIVE_FILES_INSTANCE=<已授权实例 ID>` 后运行 `npx e2e run tests/native-files-live.e2e.ts`。复用已有登录态，只上传生成的测试文件，校验下载内容后删除该测试文件。
 
 ## Windows 构建
 

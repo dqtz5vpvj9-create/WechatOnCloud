@@ -11,6 +11,8 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
+        "dragDropEnabled": false,
         "title": "云微",
         "url": "https://wechat.tail.lixinrui000.cn/",
         "width": 1280,
