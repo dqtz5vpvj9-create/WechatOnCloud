@@ -91,7 +91,13 @@ function installSeamlessIme(
   // 字母绝不接管，否则会把下一个词的拼音首字母（如"呀"的 y）当成字面字符抢走，造成"你好y呀"。字母交给输入法合成。
   const onKeyDownCapture = (ev: Event) => {
     const e = ev as KeyboardEvent;
-    if (e.isComposing) return; // 拼音合成中，交给输入法（候选数字选词也在此放行）
+    if (e.isComposing || composing || e.keyCode === 229) {
+      // WebKit can finish composition before delivering the candidate keydown.
+      // Keep both the HTTP queue and Kasm's keysym handler out of IME keys;
+      // preserve the browser default so candidate selection still works.
+      e.stopImmediatePropagation();
+      return;
+    }
     if (e.ctrlKey || e.altKey || e.metaKey) return; // 快捷键放行
     if (!active()) return; // 没有中文在转发 → 不接管（英文/数字走原生 keysym，零延迟）
     if (/^[0-9]$/.test(e.key)) {
