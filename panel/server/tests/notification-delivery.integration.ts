@@ -81,6 +81,11 @@ test('poll and WeFlow stream both honor mute settings and open WeChat', async ()
     for (let i = 0; !received.some(item => item.snapshot && item.count === 0) && i < 200; i++) await delay(10);
     assert.equal(received.filter(item => item.snapshot).at(-1)?.count, 0, 'same-timestamp read clears attention');
     assert.equal(secondDevice.filter(item => item.snapshot).at(-1)?.count, 0, 'phone read reconciles both devices');
+    received.length = 0;
+    secondDevice.length = 0;
+    notifications.markNotificationsRead({ id: 'test-user' } as any);
+    assert.equal(received.at(-1)?.count, 0, 'repeated read acknowledgment resends authoritative state');
+    assert.equal(secondDevice.at(-1)?.count, 0, 'repeated acknowledgment heals stale state on other devices');
     unreadOverride = undefined;
     timestamp = 4;
     for (let i = 0; !received.some(item => !item.snapshot) && i < 200; i++) await delay(10);

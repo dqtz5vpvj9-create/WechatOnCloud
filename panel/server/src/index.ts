@@ -146,6 +146,7 @@ import {
   startNotificationWatcher,
   userHasPush,
   markNotificationsRead,
+  unreadSnapshotFor,
 } from './notifications.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -389,7 +390,11 @@ app.get('/api/notifications/stream', async (req, reply) => {
   const remove = addLiveSubscriber(u.id, (payload) => {
     reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
   });
-  const keepAlive = setInterval(() => reply.raw.write(': keepalive\n\n'), 20_000);
+  // Keep the connection alive and reconcile native clients even if the unread
+  // state did not change after a delayed or interrupted native command.
+  const keepAlive = setInterval(() => {
+    reply.raw.write(`data: ${JSON.stringify(unreadSnapshotFor(u.id))}\n\n`);
+  }, 20_000);
   let closed = false;
   const close = () => {
     if (closed) return;

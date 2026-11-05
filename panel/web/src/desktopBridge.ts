@@ -1,4 +1,5 @@
 const UNREAD_KEY = 'woc_desktop_unread';
+let nativeUpdates: Promise<unknown> = Promise.resolve();
 
 export function isDesktopApp() {
   return '__TAURI__' in window;
@@ -25,7 +26,9 @@ export interface DesktopNotificationPayload {
 async function setNativeUnread(count: number, notify: boolean, payload?: DesktopNotificationPayload) {
   if (!isDesktopApp()) return;
   const invoke = (window as any).__TAURI__.core.invoke as (command: string, args?: object) => Promise<unknown>;
-  await invoke('set_desktop_notification', {
+  // Native commands can finish out of order. A delayed incoming notification
+  // must finish before a later authoritative read snapshot clears it.
+  const update = nativeUpdates.catch(() => {}).then(() => invoke('set_desktop_notification', {
     payload: {
       count,
       notify,
@@ -38,7 +41,9 @@ async function setNativeUnread(count: number, notify: boolean, payload?: Desktop
       snapshot: payload?.snapshot,
       sessions: payload?.sessions,
     },
-  });
+  }));
+  nativeUpdates = update;
+  await update;
 }
 
 function storedUnread() {

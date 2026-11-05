@@ -71,7 +71,7 @@ async function isOfficialAccount(inst: Instance, id: string): Promise<boolean> {
   return official;
 }
 
-function unreadSnapshotFor(userId: string): SnapshotPayload {
+export function unreadSnapshotFor(userId: string): SnapshotPayload {
   const user = findById(userId);
   if (!user || user.disabled) return { snapshot: true, count: 0, sessions: [] };
   let count = 0;
@@ -113,22 +113,20 @@ export function isNotificationCandidate(message: any) {
 }
 
 export function markNotificationsRead(user: User, tag?: string) {
-  let changed = false;
   for (const [instanceId, sessionCursors] of cursors) {
     if (!userCanAccess(user, instanceId)) continue;
     for (const [sessionId, cursor] of sessionCursors) {
       if (tag && tag !== `wechat-${instanceId}-${sessionId}`) continue;
       if (cursor.attention > 0) {
         cursor.attention = 0;
-        changed = true;
       }
       if (cursor.dismissedUnread !== cursor.unread) {
         cursor.dismissedUnread = cursor.unread;
-        changed = true;
       }
     }
   }
-  if (changed) broadcastUnreadSnapshots();
+  // Repeated acknowledgments also repair clients holding a stale tray state.
+  broadcastUnreadSnapshots();
 }
 
 export function selectNotificationCandidates(
