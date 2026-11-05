@@ -1,0 +1,35 @@
+name: Safari clipboard regression
+on:
+  push:
+    branches: [fix/safari-clipboard-sync]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  clipboard:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+        working-directory: panel/web
+      - run: npm ci
+        working-directory: desktop
+      - run: npx playwright install webkit
+        working-directory: desktop
+      - run: npm run check
+        working-directory: panel/web
+      - run: npx e2e run tests-panel/safari-clipboard.e2e.ts --config e2e.panel.config.ts --target webkit --output .e2e/safari-macos
+        working-directory: desktop
+      - run: npx e2e run --config e2e.webkit.config.ts --output .e2e/input-macos
+        working-directory: desktop
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: safari-clipboard-macos
+          path: |
+            desktop/.e2e/safari-macos
+            desktop/.e2e/input-macos

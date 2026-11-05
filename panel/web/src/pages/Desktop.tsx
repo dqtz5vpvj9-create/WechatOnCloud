@@ -1,3 +1,4 @@
+import { installSafariClipboard } from '../safariClipboard';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api, appProfile, fmtUploadSize, provisionProgressText, VIEWER_ID, type Superseded } from '../api';
@@ -387,7 +388,16 @@ function installClipboardGuard(win: Window, st: ClipState): () => void {
       return t;
     });
   st.guarded = true;
+  const stopSafariClipboard = installSafariClipboard(win, (items) => orig.write.call(clip, items), (text) => {
+    if (isTransientClip(st, text)) return false;
+    st.remoteText = text;
+    st.remoteNewer = true;
+    return true;
+  }, (text, error) => {
+    if (st.remoteText === text) st.remoteNewer = !!error;
+  });
   return () => {
+    stopSafariClipboard();
     for (const k of ['write', 'writeText', 'read', 'readText']) delete c[k];
   };
 }
@@ -1958,3 +1968,4 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
     </div>
   );
 }
+
