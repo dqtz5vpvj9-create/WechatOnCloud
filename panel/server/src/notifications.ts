@@ -13,6 +13,7 @@ interface StoredSubscription {
 interface PushData {
   vapid?: { publicKey: string; privateKey: string };
   subscriptions: StoredSubscription[];
+  cursors?: Array<[string, Array<[string, Omit<Cursor, 'idsAtTimestamp'> & { idsAtTimestamp: string[] }]>]>;
 }
 interface Cursor {
   timestamp: number;
@@ -43,6 +44,9 @@ const ACTIVE_POLL_MS = Math.max(1_000, Number(process.env.WOC_NOTIFICATION_POLL_
 const IDLE_POLL_MS = Math.max(ACTIVE_POLL_MS, Number(process.env.WOC_NOTIFICATION_IDLE_POLL_MS || 15_000));
 let data: PushData | null = null;
 const cursors = new Map<string, Map<string, Cursor>>();
+// Restored cursors must be reconciled with current mute/read settings before delivery.
+const reconciledInstances = new Set<string>();
+let lastPersisted = '';
 const liveSubscribers = new Map<string, Set<(payload: object) => void>>();
 const mutedByInstance = new Map<string, Set<string>>();
 const pushWatchers = new Set<string>();
@@ -57,6 +61,7 @@ function unreadSnapshotFor(userId: string): SnapshotPayload {
   let count = 0;
   const sessions: SnapshotPayload['sessions'] = [];
   for (const [instanceId, sessionCursors] of cursors) {
+    if (!reconciledInstances.has(instanceId)) continue;
     if (!userCanAccess(user, instanceId)) continue;
     for (const [sessionId, cursor] of sessionCursors) {
       if (mutedByInstance.get(instanceId)?.has(sessionId)) continue;
@@ -77,6 +82,7 @@ function unreadSnapshotFor(userId: string): SnapshotPayload {
 }
 
 function broadcastUnreadSnapshots() {
+  persist();
   for (const [userId, subscribers] of liveSubscribers) {
     const payload = unreadSnapshotFor(userId);
     for (const send of subscribers) {
@@ -156,11 +162,19 @@ async function seedCurrentMessageIds(inst: Instance, sessions: any[], state: Map
 
 function persist() {
   if (!data) return;
+  // Match the sessions API bound; retain IDs only for the latest message second.
+  data.cursors = [...cursors].slice(0, 500).map(([id, sessions]) => [id,
+    [...sessions].slice(0, 500).map(([sessionId, cursor]) => [sessionId,
+      { ...cursor, idsAtTimestamp: [...cursor.idsAtTimestamp].slice(-100) }]),
+  ]);
+  const serialized = JSON.stringify(data);
+  if (serialized === lastPersisted) return;
   mkdirSync(dirname(FILE), { recursive: true, mode: 0o700 });
   const tmp = `${FILE}.tmp`;
-  writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
+  writeFileSync(tmp, serialized, { mode: 0o600 });
   renameSync(tmp, FILE);
   chmodSync(FILE, 0o600);
+  lastPersisted = serialized;
 }
 
 function load(): PushData {
@@ -171,6 +185,14 @@ function load(): PushData {
     data = { subscriptions: [] };
   }
   if (!Array.isArray(data!.subscriptions)) data!.subscriptions = [];
+  for (const [instanceId, sessions] of data!.cursors || []) {
+    const restored = new Map<string, Cursor>();
+    for (const [sessionId, cursor] of sessions.slice(0, 500)) {
+      if (![cursor.timestamp, cursor.unread, cursor.attention, cursor.dismissedUnread].every(Number.isFinite)) continue;
+      restored.set(sessionId, { ...cursor, idsAtTimestamp: new Set(cursor.idsAtTimestamp.slice(-100)) });
+    }
+    cursors.set(instanceId, restored);
+  }
   if (!data!.vapid?.publicKey || !data!.vapid?.privateKey) {
     data!.vapid = webpush.generateVAPIDKeys();
     persist();
@@ -225,6 +247,7 @@ export function removePushSubscription(userId: string, endpoint?: string) {
 }
 
 export function addLiveSubscriber(userId: string, send: (payload: object) => void) {
+  load();
   let subscribers = liveSubscribers.get(userId);
   if (!subscribers) {
     subscribers = new Set();
@@ -356,6 +379,7 @@ async function handleWeFlowPush(inst: Instance, event: any) {
     timestamp: timestamp * 1000 || Date.now(),
   };
   await deliverToUsers(inst, payload);
+  broadcastUnreadSnapshots();
   const latency = timestamp > 0 ? Date.now() - timestamp * 1000 : -1;
   console.log(`[notifications] WeFlow push · ${inst.id}/${id} · latency=${latency}ms`);
 }
@@ -393,8 +417,13 @@ async function pollInstance(inst: Instance) {
     weflowApi(inst, '/api/v1/sessions?limit=500'),
     weflowMutedSessions(inst),
   ]);
+  const previousMuted = mutedByInstance.get(inst.id);
+  const muteChanged = !previousMuted || previousMuted.size !== mutedSessions.size
+    || [...mutedSessions].some(id => !previousMuted.has(id));
   mutedByInstance.set(inst.id, mutedSessions);
   const sessions = Array.isArray(result?.sessions) ? result.sessions : [];
+  const firstReconciliation = !reconciledInstances.has(inst.id);
+  reconciledInstances.add(inst.id);
   let state = cursors.get(inst.id);
   if (!state) {
     state = new Map(sessions.map((s: any) => [String(s.username), {
@@ -408,7 +437,7 @@ async function pollInstance(inst: Instance) {
     broadcastUnreadSnapshots();
     return;
   }
-  let unreadChanged = false;
+  let unreadChanged = firstReconciliation || muteChanged;
   for (const session of sessions) {
     const id = String(session.username || '');
     if (!id) continue;
@@ -423,6 +452,13 @@ async function pollInstance(inst: Instance) {
       });
       unreadChanged ||= unread > 0;
       continue;
+    }
+    // Read state changes independently of last-message timestamps. Do this
+    // before the unchanged-message fast path, while ignoring stale DB snapshots.
+    if (timestamp >= old.timestamp && unread === 0 && old.unread > 0) {
+      old.attention = 0;
+      old.dismissedUnread = 0;
+      unreadChanged = true;
     }
     const inspectSameSecond = shouldInspectSameSecond(
       timestamp, old.timestamp, unread, old.unread, old.idsSeeded, Math.floor(Date.now() / 1000),
@@ -476,6 +512,7 @@ async function pollInstance(inst: Instance) {
     }
   }
   if (unreadChanged) broadcastUnreadSnapshots();
+  else persist();
 }
 
 export function startNotificationWatcher(instances: () => Instance[]) {

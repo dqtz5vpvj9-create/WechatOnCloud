@@ -34,6 +34,7 @@ struct TaskbarState {
     tray_messages: Mutex<Vec<TrayMessage>>,
     dismissed_messages: Mutex<HashMap<String, u32>>,
     tray_preview_hovered: AtomicBool,
+    tray_preview_generation: AtomicU32,
     tray_rect: Mutex<Option<Rect>>,
     shortcut_down: AtomicBool,
     shortcut_registered: AtomicBool,
@@ -638,6 +639,9 @@ fn rect_in_physical_pixels(rect: Rect, scale_factor: f64) -> (f64, f64, f64, f64
 
 fn show_tray_preview(app: &AppHandle, rect: Rect) {
     let state = app.state::<TaskbarState>();
+    state
+        .tray_preview_generation
+        .fetch_add(1, Ordering::Relaxed);
     if let Ok(mut last_rect) = state.tray_rect.lock() {
         *last_rect = Some(rect);
     }
@@ -703,25 +707,91 @@ fn show_tray_preview_for_test(app: AppHandle) -> Result<(), String> {
 }
 
 fn hide_tray_preview_later(app: AppHandle, delay_ms: u64) {
+    let generation = app
+        .state::<TaskbarState>()
+        .tray_preview_generation
+        .fetch_add(1, Ordering::Relaxed)
+        + 1;
     thread::spawn(move || {
         thread::sleep(Duration::from_millis(delay_ms));
-        if !app
-            .state::<TaskbarState>()
-            .tray_preview_hovered
-            .load(Ordering::Relaxed)
-        {
-            if let Some(window) = app.get_webview_window(TRAY_PREVIEW_WINDOW) {
+        let main_app = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let state = main_app.state::<TaskbarState>();
+            if state.tray_preview_generation.load(Ordering::Relaxed) != generation {
+                return;
+            }
+            let Some(window) = main_app.get_webview_window(TRAY_PREVIEW_WINDOW) else {
+                return;
+            };
+            if !window.is_visible().unwrap_or(false) {
+                return;
+            }
+            // Native cursor coordinates remain available when an unfocused macOS
+            // WebView has not delivered DOM mouseenter yet. Include the short
+            // gap between the status item and the preview in the handoff region.
+            let inside = match (
+                main_app.cursor_position(),
+                window.outer_position(),
+                window.outer_size(),
+            ) {
+                (Ok(cursor), Ok(position), Ok(size)) => {
+                    let scale = window.scale_factor().unwrap_or(1.0);
+                    let icon = state
+                        .tray_rect
+                        .lock()
+                        .ok()
+                        .and_then(|rect| *rect)
+                        .map(|rect| rect_in_physical_pixels(rect, scale));
+                    preview_pointer_inside(
+                        (cursor.x, cursor.y),
+                        (
+                            position.x as f64,
+                            position.y as f64,
+                            size.width as f64,
+                            size.height as f64,
+                        ),
+                        icon,
+                    )
+                }
+                _ => state.tray_preview_hovered.load(Ordering::Relaxed),
+            };
+            if inside {
+                hide_tray_preview_later(main_app.clone(), 450);
+            } else {
                 let _ = window.hide();
             }
-        }
+        });
     });
+}
+
+fn preview_pointer_inside(
+    pointer: (f64, f64),
+    preview: (f64, f64, f64, f64),
+    icon: Option<(f64, f64, f64, f64)>,
+) -> bool {
+    let (x, y) = pointer;
+    let (left, top, width, height) = preview;
+    if x >= left && x <= left + width && y >= top && y <= top + height {
+        return true;
+    }
+    let Some((ix, iy, iw, ih)) = icon else {
+        return false;
+    };
+    if x >= ix && x <= ix + iw && y >= iy && y <= iy + ih {
+        return true;
+    }
+    // Only bridge the vertical gap, never the rest of the screen.
+    x >= left.min(ix)
+        && x <= (left + width).max(ix + iw)
+        && ((iy + ih <= top && y >= iy + ih && y <= top)
+            || (top + height <= iy && y >= top + height && y <= iy))
 }
 
 #[tauri::command]
 fn set_tray_preview_hovered(app: AppHandle, state: State<'_, TaskbarState>, hovered: bool) {
     state.tray_preview_hovered.store(hovered, Ordering::Relaxed);
     if !hovered {
-        hide_tray_preview_later(app, 120);
+        hide_tray_preview_later(app, 450);
     }
 }
 
@@ -960,7 +1030,7 @@ pub fn run() {
                             .state::<TaskbarState>()
                             .tray_preview_hovered
                             .store(false, Ordering::Relaxed);
-                        hide_tray_preview_later(tray.app_handle().clone(), 240);
+                        hide_tray_preview_later(tray.app_handle().clone(), 450);
                     }
                     _ => {}
                 })
@@ -1014,6 +1084,28 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{merge_tray_message, wechat_message_route, TrayMessage};
+
+    #[test]
+    fn pointer_can_cross_menu_bar_gap_into_preview_on_retina_display() {
+        let preview = (-600.0, 64.0, 608.0, 332.0);
+        let icon = Some((-320.0, 0.0, 44.0, 48.0));
+        for point in [
+            (-300.0, 20.0),
+            (-300.0, 55.0),
+            (-300.0, 90.0),
+            (-20.0, 380.0),
+        ] {
+            assert!(super::preview_pointer_inside(point, preview, icon));
+        }
+        for point in [(-650.0, 55.0), (-300.0, 420.0), (100.0, 90.0)] {
+            assert!(!super::preview_pointer_inside(point, preview, icon));
+        }
+        assert!(super::preview_pointer_inside(
+            (300.0, 395.0),
+            (0.0, 100.0, 608.0, 280.0),
+            Some((280.0, 400.0, 40.0, 40.0))
+        ));
+    }
 
     #[test]
     fn notification_routes_open_wechat_including_legacy_weflow_links() {
