@@ -2,7 +2,6 @@ import { beforeEach, test } from '@e2e-dev/web';
 import { expect } from 'e2e';
 
 const id = 'ad22dcbaa6';
-const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP4z8DwH4QZYAwAR8oH+WdZbrcAAAAASUVORK5CYII=', 'base64');
 beforeEach(async ({ browser }) => {
   await browser.route('**/registerSW.js', route => route.fulfill({ contentType: 'text/javascript', body: '' }));
   await browser.addInitScript(() => {
@@ -25,10 +24,6 @@ beforeEach(async ({ browser }) => {
   }
   await browser.route('**/api/**', async route => {
     const path = new URL(route.request.url).pathname;
-    if (path.endsWith('/clipboard-image')) {
-      await route.fulfill({ body: png, contentType: 'image/png' });
-      return;
-    }
     let data: any = { ok: true };
     if (path === '/api/auth/me') data = { user: { id: 'test', username: 'test', role: 'admin', allowedInstances: [] } };
     else if (path === '/api/instances') data = { instances: [{ id, name: 'Safari复制验证', appType: 'wechat', runtime: 'running', wechat: { phase: 'done', installed: true } }] };
@@ -113,19 +108,6 @@ test('keyboard copy and repeated copies of the same text work', async ({ app, br
     await receive(browser, 'repeated remote text');
     await expect.poll(() => browser.evaluate(() => navigator.clipboard.readText())).toBe('repeated remote text');
   }
-});
-
-test('keyboard copy of a remote image reaches the native Safari PNG clipboard', async ({ app, browser }) => {
-  await prepare(app, browser);
-  test.skip(!await browser.evaluate(() => ClipboardItem.supports?.('image/png') !== false), 'Safari PNG clipboard support');
-  await clickRemote(browser);
-  await browser.keyboard.press('Meta+c');
-  await expect.poll(() => browser.evaluate(async () => {
-    const items = await navigator.clipboard.read();
-    const image = items.find(item => item.types.includes('image/png'));
-    return image ? (await image.getType('image/png')).size : 0;
-  })).toBe(png.length);
-  expect(await browser.evaluate(() => (window as any).clipboardErrors)).toEqual([]);
 });
 
 test('IME temporary clipboard content is filtered before a genuine copy', async ({ app, browser }) => {

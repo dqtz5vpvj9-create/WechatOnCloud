@@ -352,7 +352,7 @@ async function clipItemsText(items: ClipboardItems | ClipboardItem[] | undefined
   }
   return null;
 }
-function installClipboardGuard(win: Window, st: ClipState, loadImage?: () => Promise<Blob>): () => void {
+function installClipboardGuard(win: Window, st: ClipState): () => void {
   const clip = (win.navigator as any).clipboard as Clipboard | undefined;
   if (!clip || typeof clip.write !== 'function') {
     st.guarded = false;
@@ -398,7 +398,7 @@ function installClipboardGuard(win: Window, st: ClipState, loadImage?: () => Pro
     return true;
   }, (text, error) => {
     if (st.remoteText === text) st.remoteNewer = !!error;
-  }, loadImage);
+  });
   return () => {
     stopSafariClipboard();
     for (const k of ['write', 'writeText', 'read', 'readText']) delete c[k];
@@ -948,7 +948,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
     const win = frameRef.current?.contentWindow;
     if (!win) return;
     try {
-      return installClipboardGuard(win, clip.current, () => api.clipboardImage(id));
+      return installClipboardGuard(win, clip.current);
     } catch {
       return;
     }
