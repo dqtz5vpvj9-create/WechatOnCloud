@@ -47,7 +47,9 @@ test('global quality switch confirms restart, updates rendering and persists acr
 
 test('real KasmVNC renders at 2x and returns to standard without reconnecting', async ({ app, browser }) => {
   test.skip(process.env.WOC_HDPI_LIVE !== '1', 'Requires the disposable KasmVNC probe on port 19455');
-  await browser.route('**/quality-wrapper', route => route.fulfill({ contentType: 'text/html', body: '<html><body style="margin:0"><script>addEventListener("load",()=>{const f=document.createElement("iframe");f.style="border:0;width:100vw;height:100vh";f.src="/index.html?autoconnect=1&resize=remote&path=websockify&enable_webrtc=false";document.body.append(f);});</script></body></html>' }));
+  // Exercise Kasm's narrow/high-DPI special case, in addition to its normal path.
+  await browser.addInitScript(() => Object.defineProperty(window, 'devicePixelRatio', { get: () => 3 }));
+  await browser.route('**/quality-wrapper', route => route.fulfill({ contentType: 'text/html', body: '<html><body style="margin:0"><script>addEventListener("load",()=>{const f=document.createElement("iframe");f.style="border:0;width:400px;height:600px";f.src="/index.html?autoconnect=1&resize=remote&path=websockify&enable_webrtc=false";document.body.append(f);});</script></body></html>' }));
   await app.open('http://127.0.0.1:19455/quality-wrapper');
   await expect.poll(() => browser.evaluate(() => document.querySelector('iframe')?.contentDocument?.documentElement.classList.contains('noVNC_connected'))).toBe(true);
   await browser.evaluate((code: string) => {

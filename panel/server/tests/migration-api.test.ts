@@ -126,6 +126,18 @@ test('migration HTTP API requires admin and rejects invalid configuration before
     const saved = JSON.parse(await readFile(dataPath, 'utf8'));
     assert.equal(saved.instances.length, 2);
     assert.equal(saved.instances[0].migration, undefined, 'all rejected requests must leave config untouched');
+    const changed = await request('POST', '/api/admin/desktop-quality', adminCookie, { quality: 'hd' });
+    assert.equal(changed.status, 200);
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const current = await (await request('GET', '/api/desktop-quality', subCookie)).json() as any;
+      if (current.phase === 'ready') {
+        assert.equal(current.quality, 'hd', 'every authenticated client reads the same global setting');
+        break;
+      }
+      if (attempt === 49) assert.fail('global quality job did not complete');
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(JSON.parse(await readFile(dataPath, 'utf8')).settings.desktopQuality, 'hd');
   } finally {
     if (child.exitCode === null) {
       const closed = once(child, 'close');

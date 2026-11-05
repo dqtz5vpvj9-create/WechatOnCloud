@@ -71,6 +71,15 @@ export function connectDisplayQuality(win: Window, quality: Quality): () => void
     const key = `${quality}/${width}/${height}`;
     if (key === previous) return;
     previous = key;
+    // Kasm's automatic antialiasing also applies an extra scale on narrow
+    // high-DPI screens. Use its supported smoothing control to keep 1x/2x exact.
+    const smoothing = win.document.getElementById('noVNC_setting_anti_aliasing') as HTMLSelectElement | null;
+    if (smoothing && smoothing.value !== '1') {
+      smoothing.value = '1';
+      const event = win.document.createEvent('Event');
+      event.initEvent('change', true, false);
+      smoothing.dispatchEvent(event);
+    }
     const send = (data: object) => win.postMessage(data, win.location.origin);
     send({ action: 'setvideoquality', value: quality === 'hd' ? 3 : 2 });
     send({ action: 'enable_hidpi', value: false });
