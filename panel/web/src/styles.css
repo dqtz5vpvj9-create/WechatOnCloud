@@ -1494,6 +1494,24 @@ body {
     color 0.15s,
     transform 0.15s;
 }
+.notification-toggle {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 10px;
+  transition: background 0.15s, color 0.15s, transform 0.15s;
+}
+.notification-toggle:hover { color: var(--text); background: rgba(var(--shadow) / 0.06); }
+.notification-toggle:active { transform: scale(0.94); }
+.notification-toggle.on { color: var(--wx-green-dark); background: rgba(var(--green-rgb) / 0.12); }
+.notification-toggle:disabled { opacity: 0.55; cursor: wait; }
 .theme-toggle:hover {
   color: var(--text);
   background: rgba(var(--shadow) / 0.06);
@@ -1519,6 +1537,73 @@ body {
 }
 
 /* —— 内嵌实例视图 —— */
+.desktop-apps {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  background: var(--surface);
+  box-shadow: inset 0 -1px 0 rgba(var(--shadow) / 0.08);
+}
+.desktop-app {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 18px;
+  border-radius: 10px;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.desktop-app:hover { background: var(--trough); color: var(--text); }
+.desktop-app.active { background: var(--wx-green, #07c160); color: #fff; }
+.desktop-app:focus-visible, .sb-weflow:focus-visible { outline: 2px solid var(--wx-green, #07c160); outline-offset: 2px; }
+.sb-instance-group { display: flex; flex-direction: column; gap: 2px; }
+.sb-weflow { text-decoration: none; }
+.sb-weflow-icon {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: rgba(7, 193, 96, 0.12);
+  color: var(--wx-green-dark);
+}
+.home-launcher { min-width: 0; }
+.home-launcher .home-card { width: 100%; }
+.desktop-apps--launch {
+  margin-top: 8px;
+  padding: 6px;
+  border-radius: 12px;
+  box-shadow: var(--crease);
+}
+.desktop-apps--launch .desktop-app { flex: 1; color: var(--wx-green-dark); padding: 0 10px; }
+.entry-act .desktop-apps--launch {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.entry-act .desktop-apps--launch .desktop-app {
+  min-height: 34px;
+  border-radius: var(--r-pill, 999px);
+  color: var(--accent);
+  background: var(--accent-tint, var(--trough));
+}
+@media (max-width: 640px) {
+  .entry-act .desktop-apps--launch .desktop-app { min-height: 44px; }
+}
+@media (max-width: 767px) {
+  .desktop-apps { padding: 6px 12px; }
+  .desktop-app { flex: 1; min-height: 44px; }
+}
+
 .iv-stage {
   position: relative;
   flex: 1;
@@ -3043,6 +3128,15 @@ select.input {
   .entry-table.no-av .entry-state {
     padding-left: 16px;
   }
+  .entry.entry-dual {
+    grid-template-areas:
+      'main main'
+      'state act';
+  }
+  .entry-dual .entry-state {
+    align-self: center;
+    padding: 10px 8px 10px 16px;
+  }
   .entry-act {
     grid-area: act;
     padding: 10px 16px 10px 0;
@@ -3460,3 +3554,8 @@ select.input {
     animation-iteration-count: infinite !important;
   }
 }
+.ws-app-switch {
+  width: 34px; height: 34px; flex: 0 0 34px; display: grid; place-items: center;
+  color: var(--text-2); border: 1px solid var(--line); border-radius: 9px; text-decoration: none;
+}
+.ws-app-switch:hover { color: var(--wx-green); background: var(--hover); }

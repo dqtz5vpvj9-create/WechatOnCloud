@@ -2,11 +2,13 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from './auth';
 import { useUI, PasswordInput } from './ui';
-import { api, appProfile, provisionProgressText, type InstanceWithStatus } from './api';
+import { api, appProfile, provisionProgressText, WEFLOW_SCREEN, type InstanceWithStatus } from './api';
+import { DesktopApps, hasWeFlowDesktop, WeFlowIcon } from './DesktopApps';
 import { InstanceIcon } from './AppIcon';
 import { IcShield, IcChevronRight } from './icons';
 import { GridName, StateWord, PenMark } from './parts';
 import { getThemeMode, applyThemeMode, nextThemeMode, resolveDark, type ThemeMode } from './theme';
+import { isDesktopApp, notifyTaskbar } from './desktopBridge';
 import InstanceView from './pages/Desktop';
 import Admin from './pages/Admin';
 
@@ -97,6 +99,12 @@ export default function AppShell() {
   const [showPw, setShowPw] = useState(false);
   const [isDesktop, setIsDesktop] = useState(() => window.matchMedia('(min-width: 768px)').matches);
   const loc = useLocation();
+  const nav = useNavigate();
+  const singleInstance = state.loaded && state.instances.length === 1;
+
+  useEffect(() => {
+    if (singleInstance && loc.pathname === '/') nav(`/i/${state.instances[0].id}`, { replace: true });
+  }, [singleInstance, loc.pathname, nav, state.instances]);
 
   useEffect(() => {
     const m = window.matchMedia('(min-width: 768px)');
@@ -106,6 +114,13 @@ export default function AppShell() {
   }, []);
 
   useEffect(() => setDrawer(false), [loc.pathname]); // 路由变化关抽屉
+
+  useEffect(() => {
+    if (!isDesktopApp() || state.instances.length === 0) return;
+    const instance = state.instances.find((item) => item.runtime === 'running') || state.instances[0];
+    const invoke = (window as any).__TAURI__.core.invoke as (command: string, args?: object) => Promise<unknown>;
+    void invoke('set_desktop_default_route', { url: `/i/${encodeURIComponent(instance.id)}` });
+  }, [state.instances]);
 
   // 路由切换时刷新共享实例列表：管理页用的是独立列表，新建/安装实例后不会动到这个共享 context，
   // 否则进入实例页 / 回主页都读到陈旧列表（实例缺失），需手动刷新整页才出现。导航即拉一次最新即可。
@@ -138,8 +153,9 @@ export default function AppShell() {
 
   return (
     <InstancesCtx.Provider value={state}>
-      <div className={'shell' + (railed ? ' collapsed' : '') + (drawer ? ' drawer-open' : '')}>
-        <Sidebar collapsed={railed} onToggleCollapsed={toggleCollapsed} />
+      <NotificationRuntime />
+      <div className={'shell' + (railed ? ' collapsed' : '') + (drawer ? ' drawer-open' : '') + (singleInstance ? ' single-instance' : '')}>
+        <Sidebar collapsed={railed} onToggleCollapsed={toggleCollapsed} singleInstance={singleInstance} />
         <div className="shell-backdrop" onClick={() => setDrawer(false)} />
         <main className="workspace">
           <Routes>
@@ -155,14 +171,14 @@ export default function AppShell() {
   );
 }
 
-function Sidebar({ collapsed, onToggleCollapsed }: { collapsed: boolean; onToggleCollapsed: () => void }) {
+function Sidebar({ collapsed, onToggleCollapsed, singleInstance }: { collapsed: boolean; onToggleCollapsed: () => void; singleInstance: boolean }) {
   const { user, logout } = useAuth();
   const { confirm } = useUI();
   const { instances } = useInstances();
   const nav = useNavigate();
   const loc = useLocation();
   const isAdmin = user?.role === 'admin';
-  const go = (p: string) => nav(p);
+  const go = (p: string) => WEFLOW_SCREEN ? window.location.assign(p) : nav(p);
 
   // 有新版时在「管理」入口点个红点（仅管理员，因为升级面板需管理员在宿主操作）。
   // 依赖 loc.pathname：导航时复查一次（服务端有缓存、开销极小），保证刚启动时首检完成后红点能及时出现。
@@ -187,21 +203,22 @@ function Sidebar({ collapsed, onToggleCollapsed }: { collapsed: boolean; onToggl
         </button>
       </div>
 
-      <nav className="sb-nav">
+      {!singleInstance && <nav className="sb-nav">
         <button className={'sb-item' + (loc.pathname === '/' ? ' on' : '')} onClick={() => go('/')} title="主页">
           <span className="sb-ic">{Icon.home}</span>
           {!collapsed && <span className="sb-label">主页</span>}
         </button>
-      </nav>
+      </nav>}
 
-      {!collapsed && <div className="sb-section">实例</div>}
-      <div className="sb-list">
+      {!singleInstance && !collapsed && <div className="sb-section">实例</div>}
+      {!singleInstance && <div className="sb-list">
         {instances.length === 0 && !collapsed && <div className="sb-empty">暂无可用实例</div>}
         {instances.map((inst) => {
-          const on = loc.pathname === `/i/${inst.id}`;
+          const on = loc.pathname === `/i/${inst.id}` && !WEFLOW_SCREEN;
           const st = statusOf(inst);
           return (
-            <button key={inst.id} className={'sb-item sb-inst' + (on ? ' on' : '')} onClick={() => go(`/i/${inst.id}`)} title={`${inst.name} · ${st.text}`}>
+            <div key={inst.id} className="sb-instance-group">
+            <button className={'sb-item sb-inst' + (on ? ' on' : '')} onClick={() => go(`/i/${inst.id}`)} title={`${inst.name} · ${st.text}`}>
               <span className="sb-avatar">
                 <InstanceIcon icon={inst.icon} appType={inst.appType} size={34} radius={10} />
                 <span className={'sb-dot ' + st.cls} />
@@ -209,9 +226,15 @@ function Sidebar({ collapsed, onToggleCollapsed }: { collapsed: boolean; onToggl
               {!collapsed && <span className="sb-label">{inst.name}</span>}
               <span className="sr-only">{st.text}</span>
             </button>
+            {hasWeFlowDesktop(inst.id) && <a className={'sb-item sb-weflow' + (loc.pathname === `/i/${inst.id}` && WEFLOW_SCREEN ? ' on' : '')} href={`/i/${inst.id}?screen=weflow`} title="WeFlow · 聊天记录" aria-label="打开 WeFlow" aria-current={loc.pathname === `/i/${inst.id}` && WEFLOW_SCREEN ? 'page' : undefined}>
+              <span className="sb-avatar sb-weflow-icon"><WeFlowIcon /></span>
+              {!collapsed && <span className="sb-label">WeFlow</span>}
+              {!collapsed && <span className="sb-stxt">聊天记录</span>}
+            </a>}
+            </div>
           );
         })}
-      </div>
+      </div>}
 
       <div className="sb-footer">
         <button
@@ -269,7 +292,7 @@ const themeIcon: Record<ThemeMode, JSX.Element> = {
 };
 // 主题开关：统一控制「面板」+「实例桌面」深色。面板部分立即生效（本地 CSS）；实例部分仅管理员可改
 // （服务端持久化 + 对运行中实例 docker exec 实时切换；非管理员只切自己的面板观感，不动实例）。
-function ThemeToggle() {
+export function ThemeToggle() {
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
   const [mode, setMode] = useState<ThemeMode>(() => getThemeMode());
@@ -330,6 +353,157 @@ function ThemeToggle() {
   );
 }
 
+function pushKey(key: string): ArrayBuffer {
+  const padded = key.padEnd(key.length + ((4 - (key.length % 4)) % 4), '=');
+  const raw = atob(padded.replace(/-/g, '+').replace(/_/g, '/'));
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return bytes.buffer;
+}
+
+const LIVE_NOTIFICATION_KEY = 'woc-live-notifications';
+let liveNotificationSource: EventSource | null = null;
+let liveNotificationRegistration: ServiceWorkerRegistration | null = null;
+
+async function showNotification(registration: ServiceWorkerRegistration, data: any) {
+  const options: NotificationOptions & { renotify?: boolean; timestamp?: number } = {
+    body: data?.body || '你有一条新消息',
+    icon: data?.icon || '/icon-192.png',
+    badge: '/icon-192.png',
+    tag: data?.tag || 'woc-message',
+    renotify: true,
+    timestamp: data?.timestamp || Date.now(),
+    data: { url: data?.url || '/' },
+  };
+  await registration.showNotification(data?.title || '微信新消息', options);
+}
+
+function startLiveNotifications(registration?: ServiceWorkerRegistration) {
+  if (registration) liveNotificationRegistration = registration;
+  if (liveNotificationSource) return;
+  const source = new EventSource('/api/notifications/stream');
+  source.onopen = () => {
+    (window as any).__WOC_LIVE_NOTIFICATIONS_READY__ = true;
+    window.dispatchEvent(new Event('woc-live-notifications-ready'));
+  };
+  source.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (liveNotificationRegistration && !data?.snapshot) void showNotification(liveNotificationRegistration, data);
+      if (isDesktopApp()) void notifyTaskbar(data);
+    } catch { /* Ignore malformed events. */ }
+  };
+  liveNotificationSource = source;
+}
+
+function stopLiveNotifications(force = false) {
+  liveNotificationRegistration = null;
+  if (force || !isDesktopApp()) {
+    liveNotificationSource?.close();
+    liveNotificationSource = null;
+    (window as any).__WOC_LIVE_NOTIFICATIONS_READY__ = false;
+  }
+}
+
+function NotificationRuntime() {
+  useEffect(() => {
+    const desktop = isDesktopApp();
+    const browserNotifications = localStorage.getItem(LIVE_NOTIFICATION_KEY) === '1' && Notification.permission === 'granted';
+    if (!desktop && !browserNotifications) return;
+    if (desktop) startLiveNotifications();
+    if (browserNotifications) void navigator.serviceWorker.ready.then(startLiveNotifications);
+    const markRead = (event: Event) => {
+      const detail = (event as CustomEvent<{ tag?: string; all?: boolean }>).detail;
+      void api.markNotificationsRead(detail?.all ? undefined : detail?.tag).catch(() => {});
+    };
+    window.addEventListener('woc-notification-read', markRead);
+    return () => {
+      window.removeEventListener('woc-notification-read', markRead);
+      stopLiveNotifications(true);
+    };
+  }, []);
+  return null;
+}
+
+export function NotificationToggle() {
+  const { toast } = useUI();
+  const supported = 'serviceWorker' in navigator && 'Notification' in window && 'EventSource' in window;
+  const canPush = 'PushManager' in window;
+  const [mode, setMode] = useState<'off' | 'push' | 'live'>('off');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!supported) return;
+    navigator.serviceWorker.ready
+      .then((registration) => canPush ? registration.pushManager.getSubscription() : null)
+      .then((subscription) => setMode(subscription ? 'push' : localStorage.getItem(LIVE_NOTIFICATION_KEY) === '1' ? 'live' : 'off'))
+      .catch(() => {});
+  }, [supported, canPush]);
+
+  const toggle = async () => {
+    if (!supported || busy) return;
+    setBusy(true);
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      const current = canPush ? await registration.pushManager.getSubscription() : null;
+      if (mode !== 'off' || current) {
+        if (current) {
+          await api.unsubscribeNotifications(current.endpoint);
+          await current.unsubscribe();
+        }
+        localStorage.removeItem(LIVE_NOTIFICATION_KEY);
+        stopLiveNotifications();
+        setMode('off');
+        toast('消息通知已关闭', 'info');
+        return;
+      }
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') throw new Error('浏览器没有授予通知权限');
+      if (canPush) {
+        try {
+          const config = await api.notificationConfig();
+          const subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: pushKey(config.publicKey),
+          });
+          await api.subscribeNotifications(subscription.toJSON());
+          localStorage.removeItem(LIVE_NOTIFICATION_KEY);
+          setMode('push');
+          await api.testNotification();
+          toast('消息通知已开启', 'ok');
+          return;
+        } catch (error) {
+          console.warn('Web Push unavailable; using the live notification stream.', error);
+        }
+      }
+      localStorage.setItem(LIVE_NOTIFICATION_KEY, '1');
+      startLiveNotifications(registration);
+      setMode('live');
+      await showNotification(registration, {
+        title: '云微通知已开启',
+        body: '当前浏览器将通过云微信实时接收 WeFlow 新消息。',
+        tag: 'woc-live-test',
+      });
+      toast('消息通知已开启', 'ok');
+    } catch (e: any) {
+      toast(e?.message || '开启消息通知失败', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!supported) return null;
+  const enabled = mode !== 'off';
+  const label = mode === 'push' ? '消息通知：已开启' : mode === 'live' ? '消息通知：页面运行时' : '开启消息通知';
+  return (
+    <button className={'notification-toggle' + (enabled ? ' on' : '')} onClick={toggle} disabled={busy} title={label} aria-label={label}>
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M10.27 21a2 2 0 0 0 3.46 0" /><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+      </svg>
+    </button>
+  );
+}
+
 function HomeView({ onOpenMenu, onChangePassword }: { onOpenMenu: () => void; onChangePassword: () => void }) {
   const { user } = useAuth();
   const { instances, loaded } = useInstances();
@@ -344,6 +518,7 @@ function HomeView({ onOpenMenu, onChangePassword }: { onOpenMenu: () => void; on
           {Icon.menu}
         </button>
         <span className="ws-title">主页</span>
+        <NotificationToggle />
         <ThemeToggle />
       </header>
 
@@ -480,7 +655,7 @@ function HomeEntry({ no, inst, isAdmin }: { no: number; inst: InstanceWithStatus
   const stamp: Record<string, string> = { 'st-on': 'tag-on', 'st-busy': 'tag-busy', 'st-warn': 'tag-warn', 'st-off': 'tag-muted' };
 
   return (
-    <li className="entry">
+    <li className={'entry' + (hasWeFlowDesktop(inst.id) && st.cls === 'st-on' ? ' entry-dual' : '')}>
       <div className="entry-main">
         <span className="entry-av">
           <InstanceIcon icon={inst.icon} appType={inst.appType} size={36} radius={10} />
@@ -522,7 +697,9 @@ function HomeEntry({ no, inst, isAdmin }: { no: number; inst: InstanceWithStatus
           </span>
         )}
       </div>
-      <div className="entry-act">{action}</div>
+      <div className="entry-act">
+        {hasWeFlowDesktop(inst.id) && st.cls === 'st-on' ? <DesktopApps id={inst.id} launch /> : action}
+      </div>
     </li>
   );
 }

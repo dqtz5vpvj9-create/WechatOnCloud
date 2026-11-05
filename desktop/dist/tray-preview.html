@@ -18,10 +18,15 @@
         border-bottom: 1px solid #ededed; font-size: 12px; font-weight: 400; color: #666;
       }
       .header-count { color: #999; font-size: 11px; }
+      .dismiss-all, .dismiss-one {
+        border: 0; background: transparent; color: #8b8b8b; cursor: pointer; font: inherit;
+      }
+      .dismiss-all:hover, .dismiss-one:hover { color: #07b75c; }
+      .header-tools { display: flex; align-items: center; gap: 8px; }
       .messages { min-height: 0; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; scrollbar-color: #d7d7d7 transparent; }
       .message {
         width: 100%; height: 60px; padding: 10px 12px; border: 0;
-        background: transparent; display: grid; grid-template-columns: 36px minmax(0, 1fr) auto;
+        background: transparent; display: grid; grid-template-columns: 36px minmax(0, 1fr) auto 22px;
         align-items: center; column-gap: 10px; text-align: left; color: inherit; font: inherit; cursor: default;
       }
       .message:hover { background: #f2f2f2; }
@@ -41,11 +46,13 @@
         min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; display: grid; place-items: center;
         background: #fa5151; color: #fff; font: 10px/16px "Segoe UI", sans-serif;
       }
+      .dismiss-one { width: 22px; height: 22px; padding: 0; border-radius: 4px; font-size: 16px; line-height: 22px; }
+      .dismiss-one:hover { background: #e5e5e5; }
     </style>
   </head>
   <body>
     <section class="panel" aria-label="云微新消息">
-      <header class="header"><span>云微</span><span class="header-count" role="status"></span></header>
+      <header class="header"><span>云微</span><span class="header-tools"><span class="header-count" role="status"></span><button class="dismiss-all" type="button">忽略全部</button></span></header>
       <div class="messages" aria-label="会话列表"></div>
     </section>
     <script>
@@ -57,9 +64,10 @@
         count.textContent = `${payload.count} 条新消息`;
         const scrollTop = messages.scrollTop;
         messages.replaceChildren(...payload.messages.slice().reverse().map((message) => {
-          const row = document.createElement('button');
+          const row = document.createElement('div');
           row.className = 'message';
-          row.type = 'button';
+          row.role = 'button';
+          row.tabIndex = 0;
           const avatar = document.createElement('span');
           avatar.className = 'avatar';
           avatar.setAttribute('aria-hidden', 'true');
@@ -86,7 +94,21 @@
           badge.textContent = message.count > 99 ? '99+' : String(message.count || 1);
           row.append(avatar, content, badge);
           row.setAttribute('aria-label', `${message.title}，${message.count || 1} 条新消息`);
-          row.addEventListener('click', () => invoke('open_tray_message', { url: message.url }));
+          const dismiss = document.createElement('button');
+          dismiss.className = 'dismiss-one';
+          dismiss.type = 'button';
+          dismiss.title = '忽略这条会话提醒';
+          dismiss.setAttribute('aria-label', `忽略 ${message.title || '这条会话'} 的提醒`);
+          dismiss.textContent = '×';
+          dismiss.addEventListener('click', (event) => {
+            event.stopPropagation();
+            invoke('dismiss_tray_message', { tag: message.tag });
+          });
+          row.append(dismiss);
+          row.addEventListener('click', () => invoke('open_tray_message', { url: message.url, tag: message.tag }));
+          row.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') row.click();
+          });
           return row;
         }));
         messages.scrollTop = scrollTop;
@@ -94,6 +116,7 @@
 
       document.body.addEventListener('mouseenter', () => invoke('set_tray_preview_hovered', { hovered: true }));
       document.body.addEventListener('mouseleave', () => invoke('set_tray_preview_hovered', { hovered: false }));
+      document.querySelector('.dismiss-all').addEventListener('click', () => invoke('dismiss_all_tray_messages'));
     </script>
   </body>
 </html>

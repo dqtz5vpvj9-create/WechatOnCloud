@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth';
 import { PasswordInput } from '../ui';
+import { api } from '../api';
 
 export default function Login() {
   const { login } = useAuth();
@@ -17,7 +18,8 @@ export default function Login() {
     setBusy(true);
     try {
       await login(username.trim(), password);
-      nav('/', { replace: true });
+      const { instances } = await api.listInstances();
+      nav(instances.length === 1 ? `/i/${instances[0].id}` : '/', { replace: true });
     } catch (e: any) {
       setErr(e.message || '登录失败');
     } finally {

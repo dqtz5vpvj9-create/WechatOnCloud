@@ -43,7 +43,9 @@ jobs:
           workspaces: desktop/src-tauri -> target
           cache-on-failure: true
       - name: Install desktop dependencies
-        run: npm ci
+        run: |
+          npm ci
+          npm ci --prefix ../panel/web
       - name: Check formatting and native logic
         run: |
           cargo fmt --manifest-path src-tauri/Cargo.toml --check
@@ -52,12 +54,15 @@ jobs:
         run: |
           npx playwright install webkit
           npx e2e run --config e2e.webkit.config.ts --output .e2e/webkit-ci
+          WOC_PANEL_BROWSERS=webkit npx e2e run --config e2e.panel.config.ts --output .e2e/panel-webkit-ci
       - name: Upload WebKit input evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: yunwei-webkit-input-tests
-          path: desktop/.e2e/webkit-ci/
+          path: |
+            desktop/.e2e/webkit-ci/
+            desktop/.e2e/panel-webkit-ci/
           if-no-files-found: ignore
       - name: Build universal macOS app and DMG
         run: npm run build -- --ci --target universal-apple-darwin --bundles app,dmg

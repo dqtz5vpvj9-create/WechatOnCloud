@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
-import { api, appProfile, fmtUploadSize, provisionProgressText, VIEWER_ID, type Superseded } from '../api';
+import { useNavigate, useParams, type NavigateOptions } from 'react-router-dom';
+import { api, appProfile, fmtUploadSize, provisionProgressText, VIEWER_ID, WEFLOW_SCREEN, type Superseded } from '../api';
 import { browserImageCodec, fitPasteImage, pasteImageWithFallback } from '../pasteImage';
+import { copyImageToLocalClipboard } from '../copyImage';
+import { installSafariClipboard } from '../safariClipboard';
 import { useUI } from '../ui';
 import { useAuth } from '../auth';
-import { useInstances } from '../AppShell';
+import { NotificationToggle, ThemeToggle, useInstances } from '../AppShell';
+import { hasWeFlowDesktop, WeFlowIcon } from '../DesktopApps';
 import { IcFolder, IcKeyboard, IcClipboard, IcVolume, IcVolumeOff, IcMic, IcImage, IcRestart, IcUpload, IcDownload, IcClose, IcCheck } from '../icons';
 import { VncAudio } from '../vncAudio';
 import { RowMenu, type RowMenuItem } from '../parts';
@@ -12,8 +15,9 @@ import { RowMenu, type RowMenuItem } from '../parts';
 // KasmVNC noVNC 页面；反代按实例隔离：/desktop/<id>/* → 对应容器，注入凭据。
 // ws 地址带上本页的查看者标识（noVNC 先解码 path 再拼进地址），面板据此做「同一实例只在一处显示」，转发前会去掉。
 function desktopUrl(id: string) {
+  const prefix = WEFLOW_SCREEN ? `/desktop/${id}/weflow` : `/desktop/${id}`;
   return (
-    `/desktop/${id}/vnc/index.html?autoconnect=1&path=desktop/${id}/websockify%3Fwoc_viewer%3D${VIEWER_ID}&resize=remote` +
+    `${prefix}/vnc/index.html?autoconnect=1&path=${prefix.slice(1)}/websockify%3Fwoc_viewer%3D${VIEWER_ID}&resize=remote` +
     '&reconnect=true&reconnect_delay=2000&clipboard_up=true&clipboard_down=true&clipboard_seamless=true'
   );
 }
@@ -348,7 +352,7 @@ async function clipItemsText(items: ClipboardItems | ClipboardItem[] | undefined
   }
   return null;
 }
-function installClipboardGuard(win: Window, st: ClipState): () => void {
+function installClipboardGuard(win: Window, st: ClipState, loadImage?: () => Promise<Blob>): () => void {
   const clip = (win.navigator as any).clipboard as Clipboard | undefined;
   if (!clip || typeof clip.write !== 'function') {
     st.guarded = false;
@@ -387,7 +391,16 @@ function installClipboardGuard(win: Window, st: ClipState): () => void {
       return t;
     });
   st.guarded = true;
+  const stopSafariClipboard = installSafariClipboard(win, (items) => orig.write.call(clip, items), (text) => {
+    if (isTransientClip(st, text)) return false;
+    st.remoteText = text;
+    st.remoteNewer = true;
+    return true;
+  }, (text, error) => {
+    if (st.remoteText === text) st.remoteNewer = !!error;
+  }, loadImage);
   return () => {
+    stopSafariClipboard();
     for (const k of ['write', 'writeText', 'read', 'readText']) delete c[k];
   };
 }
@@ -413,6 +426,9 @@ function shouldPasteLocal(st: ClipState, text: string, localIsFresh: boolean, do
 interface TFile {
   name: string;
   size: number;
+  mtime?: number;
+  source?: 'desktop' | 'wechat';
+  path?: string;
 }
 function humanSize(n: number) {
   if (n < 1024) return n + ' B';
@@ -542,13 +558,29 @@ const MenuIcon = (
 
 export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void }) {
   const { id } = useParams<{ id: string }>();
-  const nav = useNavigate();
+  const navigate = useNavigate();
+  const nav = useCallback((path: string, options?: NavigateOptions) => {
+    if (WEFLOW_SCREEN) {
+      if (options?.replace) window.location.replace(path);
+      else window.location.assign(path);
+    } else navigate(path, options);
+  }, [navigate]);
   const { user } = useAuth();
   const { toast, confirm } = useUI();
   const { instances, loaded, reload } = useInstances();
   const isAdmin = user?.role === 'admin';
 
   const [frameLoaded, setFrameLoaded] = useState(false);
+  const [nativeVisible, setNativeVisible] = useState(true);
+  useEffect(() => {
+    const onVisibility = (event: Event) => {
+      const visible = (event as CustomEvent<{ visible?: boolean }>).detail?.visible !== false;
+      setNativeVisible(visible);
+      if (!visible) setFrameLoaded(false);
+    };
+    window.addEventListener('woc-native-visibility', onVisibility);
+    return () => window.removeEventListener('woc-native-visibility', onVisibility);
+  }, []);
   // iframe 每载入一个新文档就 +1。iframe 会在页内自行换文档：实例短暂不可用时反代先回「自动重连」页，它 3s 后
   // location.reload() 进 noVNC（重启 / 升级 / 自愈 / 断线后的整页重连都可能碰上）。这时 frameLoaded 早已是 true，
   // setFrameLoaded(true) 不触发重渲染——所以凡是往 iframe 的 window / document 挂监听的 effect 都必须依赖 frameGen，
@@ -602,7 +634,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
   // 自动回车会让文本一进框就被发出去，也让 Shift+回车换行之外的编辑很别扭。
   const [autoEnter, setAutoEnter] = useState(() => {
     try {
-      return window.localStorage.getItem('woc_ime_auto_enter') !== '0';
+      return WEFLOW_SCREEN ? window.localStorage.getItem('woc_weflow_auto_enter') === '1' : window.localStorage.getItem('woc_ime_auto_enter') !== '0';
     } catch {
       return true;
     }
@@ -611,7 +643,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
     const v = !autoEnter;
     setAutoEnter(v);
     try {
-      window.localStorage.setItem('woc_ime_auto_enter', v ? '1' : '0');
+      window.localStorage.setItem(WEFLOW_SCREEN ? 'woc_weflow_auto_enter' : 'woc_ime_auto_enter', v ? '1' : '0');
     } catch {
       /* ignore */
     }
@@ -638,7 +670,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
   const [imeSending, setImeSending] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadPct, setUploadPct] = useState(''); // 进行中的上传进度文案（「37%」「(2/5) 80%」）
-  const uploadQueue = useRef<File[]>([]);
+  const uploadQueue = useRef<{ file: File; send: boolean }[]>([]);
   const uploadBusy = useRef(false);
   const [starting, setStarting] = useState(false);
   const [control, setControl] = useState<{ free: boolean; mine: boolean; holder: string | null } | null>(null);
@@ -677,7 +709,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
   const [probing, setProbing] = useState(true);
   const offline = inst ? inst.runtime !== 'running' : false;
   const installed = !!inst && inst.wechat.installed && inst.wechat.phase !== 'downloading';
-  const showVnc = !!inst && !offline && installed;
+  const showVnc = !!inst && !offline && installed && nativeVisible;
 
   // 切换实例时重置内嵌态
   useEffect(() => {
@@ -916,7 +948,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
     const win = frameRef.current?.contentWindow;
     if (!win) return;
     try {
-      return installClipboardGuard(win, clip.current);
+      return installClipboardGuard(win, clip.current, () => api.clipboardImage(id));
     } catch {
       return;
     }
@@ -1127,8 +1159,8 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
   };
 
   // 逐个上传；上传途中再拖进 / 粘贴 / 选择的文件排进队列，由正在跑的这一轮接着传（此前会另起一轮并发上传）
-  const uploadFiles = async (list: FileList | File[]) => {
-    uploadQueue.current.push(...Array.from(list));
+  const uploadFiles = async (list: FileList | File[], send = false) => {
+    uploadQueue.current.push(...Array.from(list).map((file) => ({ file, send })));
     if (uploadBusy.current || !uploadQueue.current.length) return;
     uploadBusy.current = true;
     setUploading(true);
@@ -1136,14 +1168,14 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
     let done = 0;
     try {
       while (uploadQueue.current.length) {
-        const f = uploadQueue.current.shift()!;
+        const { file: f, send } = uploadQueue.current.shift()!;
         const total = done + 1 + uploadQueue.current.length;
         const prefix = total > 1 ? `(${done + 1}/${total}) ` : '';
         setUploadPct(`${prefix}0%`);
         try {
           await api.uploadFile(id, f, (loaded, size) =>
             setUploadPct(loaded < size ? `${prefix}${Math.floor((loaded / size) * 100)}%` : `${prefix}写入中`),
-          );
+          send);
           ok++;
         } catch (e: any) {
           toast(`${f.name}: ${e.message || '上传失败'}`, 'error');
@@ -1156,7 +1188,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
       setUploadPct('');
     }
     if (ok) {
-      toast(`已上传 ${ok} 个文件到桌面，应用里可直接取用`, 'ok');
+      toast(`已处理 ${ok} 个文件`, 'ok');
       refreshFiles();
     }
   };
@@ -1165,7 +1197,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
     e.preventDefault();
     setDragging(false);
     dragDepth.current = 0;
-    if (e.dataTransfer.files?.length) uploadFiles(e.dataTransfer.files);
+    if (e.dataTransfer.files?.length) uploadFiles(e.dataTransfer.files, true);
   };
 
   const delFile = async (name: string) => {
@@ -1384,6 +1416,20 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
     }
   };
 
+  const [copyingImage, setCopyingImage] = useState(false);
+  const copyRemoteImage = async () => {
+    if (!id || copyingImage) return;
+    setCopyingImage(true);
+    try {
+      await copyImageToLocalClipboard(() => api.clipboardImage(id));
+      toast('图片已复制到本机剪贴板，可以直接粘贴', 'ok');
+    } catch (e: any) {
+      toast(e?.message || '复制图片失败', 'error');
+    } finally {
+      setCopyingImage(false);
+    }
+  };
+
   const restartInstance = async () => {
     const ok = await confirm({
       title: '重启该实例？',
@@ -1458,7 +1504,21 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
         <button className="ws-menu" onClick={onOpenMenu} aria-label="菜单">
           {MenuIcon}
         </button>
-        <span className="ws-title">{title}</span>
+        <span className="ws-title">{WEFLOW_SCREEN ? "WeFlow" : title}</span>
+        {id && hasWeFlowDesktop(id) && (
+          <a
+            className="ws-app-switch"
+            href={WEFLOW_SCREEN ? `/i/${id}` : `/i/${id}?screen=weflow`}
+            title={WEFLOW_SCREEN ? '切换到微信' : '切换到 WeFlow'}
+            aria-label={WEFLOW_SCREEN ? '切换到微信' : '切换到 WeFlow'}
+          >
+            {WEFLOW_SCREEN ? (
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M21 11a8 8 0 0 1-8 8H8l-5 3 1.5-5A8 8 0 1 1 21 11Z" /><path d="M8 10h.01M15 10h.01" /></svg>
+            ) : <WeFlowIcon />}
+          </a>
+        )}
+        <NotificationToggle />
+        <ThemeToggle />
         {showVnc && (
           // 操作按钮收进可横向滑动的容器：手机宽度放不下时在容器内滑动，而不是整排挤出屏幕
           //（此前 390px 宽时「桌面」「重启」完全在屏幕外点不到，标题也被压成 0 宽）
@@ -1632,7 +1692,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
           <iframe
             ref={frameRef}
             className="iv-frame"
-            src={superseded ? 'about:blank' : desktopUrl(id)}
+            src={!nativeVisible || superseded ? 'about:blank' : desktopUrl(id)}
             title={`${appLabel} · 实例桌面`}
             allow="clipboard-read; clipboard-write; microphone; camera; autoplay"
             onLoad={() => {
@@ -1697,8 +1757,8 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
             <div className="iv-drop" onDrop={onDrop} onDragOver={(e) => e.preventDefault()}>
               <div className="drop-card">
                 <div className="drop-icon"><IcUpload size={36} /></div>
-                <div className="drop-title">松开上传到桌面</div>
-                <div className="drop-sub">上传后在应用里「+ / 文件」选择即可</div>
+                <div className="drop-title">松开发送到当前聊天</div>
+                <div className="drop-sub">上传完成后自动粘入微信</div>
               </div>
             </div>
           )}
@@ -1755,7 +1815,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
                 <IcUpload size={18} />
                 {uploading ? `上传中 ${uploadPct}` : '选择文件上传'}
               </button>
-              <div className="files-hint">也可直接把文件拖进来。下方为桌面（~/Desktop）里的文件，应用收到的文件另存到桌面即可在此下载。</div>
+              <div className="files-hint">把文件拖进桌面即可发到当前聊天。微信已经下载的文件会直接出现在下方。</div>
               <div className="files-list">
                 {files.length === 0 && (
                   <div className="muted small" style={{ padding: '10px 2px' }}>
@@ -1763,17 +1823,20 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
                   </div>
                 )}
                 {files.map((f) => (
-                  <div key={f.name} className="files-item">
-                    <a className="files-dl" href={api.downloadFileUrl(id, f.name)} download={f.name} title="下载">
+                  <div key={`${f.source || 'desktop'}:${f.path || f.name}`} className="files-item">
+                    <a className="files-dl" href={api.downloadFileUrl(id, f.name, f.source === 'wechat' ? f.path : undefined)} download={f.name} title="下载">
                       <span className="files-name">{f.name}</span>
                       <span className="files-size">
+                        {f.source === 'wechat' ? '微信收到 · ' : ''}
                         {humanSize(f.size)}
                         <IcDownload size={14} />
                       </span>
                     </a>
-                    <button className="files-del" title="删除" aria-label={`删除 ${f.name}`} onClick={() => delFile(f.name)}>
-                      <IcClose size={16} />
-                    </button>
+                    {f.source !== 'wechat' && (
+                      <button className="files-del" title="删除" aria-label={`删除 ${f.name}`} onClick={() => delFile(f.name)}>
+                        <IcClose size={16} />
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
@@ -1783,7 +1846,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
           {showClip && (
             <div className="iv-files">
               <div className="files-head">
-                <span>文本剪贴板</span>
+                <span>剪贴板</span>
                 <button className="btn-text" onClick={() => setShowClip(false)}>
                   关闭
                 </button>
@@ -1800,6 +1863,9 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
               </button>
               <button className="btn-text" style={{ alignSelf: 'flex-start', marginTop: 6 }} onClick={pullClipboardFromRemote}>
                 读取容器剪贴板到此框
+              </button>
+              <button className="btn-text" style={{ alignSelf: 'flex-start', marginTop: 6 }} disabled={copyingImage} onClick={copyRemoteImage}>
+                {copyingImage ? '正在复制图片…' : '复制图片到本机'}
               </button>
               <div className="files-hint">
                 局域网 http 访问时浏览器会禁用系统级剪贴板同步，故用此框中转：文本→容器剪贴板，再在应用里 Ctrl+V。

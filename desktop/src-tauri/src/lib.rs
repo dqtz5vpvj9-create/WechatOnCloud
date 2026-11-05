@@ -1,3 +1,6 @@
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::{thread, time::Duration};
@@ -29,6 +32,7 @@ struct TaskbarState {
     latest_url: Mutex<Option<String>>,
     default_url: Mutex<Option<String>>,
     tray_messages: Mutex<Vec<TrayMessage>>,
+    dismissed_messages: Mutex<HashMap<String, u32>>,
     tray_preview_hovered: AtomicBool,
     tray_rect: Mutex<Option<Rect>>,
     shortcut_down: AtomicBool,
@@ -36,7 +40,7 @@ struct TaskbarState {
     shortcut_events: AtomicU32,
 }
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TrayMessage {
     tag: String,
@@ -58,6 +62,8 @@ struct DesktopNotification {
     message_count: Option<u32>,
     tag: Option<String>,
     avatar_url: Option<String>,
+    snapshot: Option<bool>,
+    sessions: Option<Vec<TrayMessage>>,
 }
 
 fn merge_tray_message(messages: &mut Vec<TrayMessage>, mut incoming: TrayMessage) -> u32 {
@@ -200,6 +206,8 @@ fn set_taskbar_unread(
             message_count: None,
             tag: None,
             avatar_url: None,
+            snapshot: None,
+            sessions: None,
         },
     )
 }
@@ -241,7 +249,48 @@ fn apply_desktop_notification(
         message_count,
         tag,
         avatar_url,
+        snapshot,
+        sessions,
     } = payload;
+    if snapshot.unwrap_or(false) {
+        let raw_messages = sessions.unwrap_or_default();
+        let present = raw_messages
+            .iter()
+            .map(|message| message.tag.clone())
+            .collect::<HashSet<_>>();
+        let mut dismissed = state
+            .dismissed_messages
+            .lock()
+            .map_err(|error| error.to_string())?;
+        dismissed.retain(|tag, _| present.contains(tag));
+        let snapshot_messages = raw_messages
+            .into_iter()
+            .filter_map(|mut message| {
+                message.count = message
+                    .count
+                    .saturating_sub(dismissed.get(&message.tag).copied().unwrap_or(0));
+                (message.count > 0).then_some(message)
+            })
+            .collect::<Vec<_>>();
+        drop(dismissed);
+        count = snapshot_messages
+            .iter()
+            .fold(0_u32, |total, message| total.saturating_add(message.count));
+        *state
+            .tray_messages
+            .lock()
+            .map_err(|error| error.to_string())? = snapshot_messages;
+        set_unread_badge(&window.as_ref().window(), count).map_err(|error| error.to_string())?;
+        state.unread.store(count, Ordering::Relaxed);
+        state.tray_blinking.store(count > 0, Ordering::Relaxed);
+        update_tray_tooltip(app, count);
+        if count == 0 {
+            if let Some(preview) = app.get_webview_window(TRAY_PREVIEW_WINDOW) {
+                let _ = preview.hide();
+            }
+        }
+        return Ok(());
+    }
     if count == 0 {
         set_unread_badge(&window.as_ref().window(), 0).map_err(|error| error.to_string())?;
         window
@@ -269,6 +318,13 @@ fn apply_desktop_notification(
             }
             let notification_title = title.unwrap_or_else(|| "微信新消息".to_owned());
             let notification_body = body.unwrap_or_else(|| "你有一条新消息".to_owned());
+            if let Some(tag) = tag.as_ref() {
+                state
+                    .dismissed_messages
+                    .lock()
+                    .map_err(|error| error.to_string())?
+                    .remove(tag);
+            }
             {
                 let mut messages = state
                     .tray_messages
@@ -317,6 +373,63 @@ fn apply_desktop_notification(
 }
 
 #[tauri::command]
+fn dismiss_all_tray_messages(window: WebviewWindow, state: State<'_, TaskbarState>) {
+    if let (Ok(messages), Ok(mut dismissed)) =
+        (state.tray_messages.lock(), state.dismissed_messages.lock())
+    {
+        for message in messages.iter() {
+            dismissed.insert(message.tag.clone(), message.count);
+        }
+    }
+    let _ = window
+        .eval("window.dispatchEvent(new CustomEvent('woc-notification-read',{detail:{all:true}}))");
+    clear_taskbar_unread(&window.as_ref().window(), &state);
+}
+
+#[tauri::command]
+fn dismiss_tray_message(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, TaskbarState>,
+    tag: String,
+) -> Result<(), String> {
+    let count = {
+        let mut messages = state
+            .tray_messages
+            .lock()
+            .map_err(|error| error.to_string())?;
+        if let Some(message) = messages.iter().find(|message| message.tag == tag) {
+            state
+                .dismissed_messages
+                .lock()
+                .map_err(|error| error.to_string())?
+                .insert(tag.clone(), message.count);
+        }
+        messages.retain(|message| message.tag != tag);
+        messages
+            .iter()
+            .fold(0_u32, |total, message| total.saturating_add(message.count))
+    };
+    set_unread_badge(&window.as_ref().window(), count).map_err(|error| error.to_string())?;
+    state.unread.store(count, Ordering::Relaxed);
+    state.tray_blinking.store(count > 0, Ordering::Relaxed);
+    update_tray_tooltip(&app, count);
+    if let Ok(tag_json) = serde_json::to_string(&tag) {
+        let _ = window.eval(format!(
+            "window.dispatchEvent(new CustomEvent('woc-notification-read',{{detail:{{tag:{tag_json}}}}}))"
+        ));
+    }
+    if count == 0 {
+        if let Some(preview) = app.get_webview_window(TRAY_PREVIEW_WINDOW) {
+            let _ = preview.hide();
+        }
+    } else if let Some(rect) = state.tray_rect.lock().ok().and_then(|rect| *rect) {
+        show_tray_preview(&app, rect);
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn get_taskbar_unread_state(state: State<'_, TaskbarState>) -> [u32; 4] {
     [
         state.unread.load(Ordering::Relaxed),
@@ -357,8 +470,21 @@ fn show_main_window(app: &AppHandle) {
 
     let _ = window.unminimize();
     let _ = window.show();
+    let _ = window.eval(
+        "window.dispatchEvent(new CustomEvent('woc-native-visibility',{detail:{visible:true}}))",
+    );
     let _ = window.set_focus();
     let _ = window.as_ref().set_focus();
+}
+
+fn hide_main_window(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
+        return;
+    };
+    let _ = window.eval(
+        "window.dispatchEvent(new CustomEvent('woc-native-visibility',{detail:{visible:false}}))",
+    );
+    let _ = window.hide();
 }
 
 fn main_window_is_foreground(window: &WebviewWindow) -> bool {
@@ -384,7 +510,7 @@ fn toggle_main_window(app: &AppHandle) {
     }
     if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
         if window.is_visible().unwrap_or(false) && main_window_is_foreground(&window) {
-            let _ = window.hide();
+            hide_main_window(app);
         } else {
             show_main_window(app);
         }
@@ -407,6 +533,44 @@ fn get_desktop_runtime_state(app: AppHandle) -> Result<serde_json::Value, String
         "shortcutEvents": app.state::<TaskbarState>().shortcut_events.load(Ordering::Relaxed),
         "shortcutDown": app.state::<TaskbarState>().shortcut_down.load(Ordering::Relaxed),
     }))
+}
+
+#[tauri::command]
+fn open_download_path(app: AppHandle, path: String, reveal: bool) -> Result<(), String> {
+    let requested = PathBuf::from(path)
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let downloads = app
+        .path()
+        .download_dir()
+        .map_err(|error| error.to_string())?;
+    let downloads = downloads.canonicalize().unwrap_or(downloads);
+    if !requested.starts_with(&downloads) || !requested.is_file() {
+        return Err("download path is outside the Downloads folder".to_owned());
+    }
+    #[cfg(target_os = "windows")]
+    let status = if reveal {
+        Command::new("explorer.exe")
+            .arg(format!("/select,{}", requested.display()))
+            .status()
+    } else {
+        Command::new("explorer.exe").arg(&requested).status()
+    };
+    #[cfg(target_os = "macos")]
+    let status = if reveal {
+        Command::new("open").arg("-R").arg(&requested).status()
+    } else {
+        Command::new("open").arg(&requested).status()
+    };
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let status = Command::new("xdg-open")
+        .arg(if reveal { &downloads } else { &requested })
+        .status();
+    status
+        .map_err(|error| error.to_string())?
+        .success()
+        .then_some(())
+        .ok_or_else(|| "could not open the downloaded file".to_owned())
 }
 
 // Notifications always open the instance's WeChat desktop, including URLs
@@ -562,10 +726,19 @@ fn set_tray_preview_hovered(app: AppHandle, state: State<'_, TaskbarState>, hove
 }
 
 #[tauri::command]
-fn open_tray_message(app: AppHandle, url: String) -> Result<(), String> {
+fn open_tray_message(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, TaskbarState>,
+    url: String,
+    tag: Option<String>,
+) -> Result<(), String> {
     let route = wechat_message_route(&url).ok_or_else(|| "invalid message route".to_owned())?;
     if let Some(window) = app.get_webview_window(TRAY_PREVIEW_WINDOW) {
         let _ = window.hide();
+    }
+    if let Some(tag) = tag {
+        dismiss_tray_message(app.clone(), window, state, tag)?;
     }
     open_latest_message(&app, Some(route));
     Ok(())
@@ -668,9 +841,12 @@ pub fn run() {
             set_desktop_default_route,
             set_tray_preview_hovered,
             open_tray_message,
+            dismiss_tray_message,
+            dismiss_all_tray_messages,
             get_taskbar_unread_state,
             show_tray_preview_for_test,
-            get_desktop_runtime_state
+            get_desktop_runtime_state,
+            open_download_path
         ])
         .setup(|app| {
             let config = app
@@ -727,8 +903,10 @@ pub fn run() {
             .build()?;
 
             let open = MenuItem::with_id(app, "open", "打开云微", true, None::<&str>)?;
+            let dismiss =
+                MenuItem::with_id(app, "dismiss", "忽略全部未读提醒", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &quit])?;
+            let menu = Menu::with_items(app, &[&open, &dismiss, &quit])?;
 
             let configured_icon = app
                 .default_window_icon()
@@ -745,6 +923,11 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => open_default_app(app),
+                    "dismiss" => {
+                        if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+                            dismiss_all_tray_messages(window, app.state::<TaskbarState>());
+                        }
+                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -807,10 +990,7 @@ pub fn run() {
                 match event {
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
-                        let _ = window.hide();
-                    }
-                    WindowEvent::Focused(true) => {
-                        clear_taskbar_unread(window, &window.state::<TaskbarState>());
+                        hide_main_window(window.app_handle());
                     }
                     _ => {}
                 }

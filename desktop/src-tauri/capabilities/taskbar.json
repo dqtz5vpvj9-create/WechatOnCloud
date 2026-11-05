@@ -12,6 +12,8 @@
     "allow-set-desktop-default-route",
     "allow-set-tray-preview-hovered",
     "allow-open-tray-message",
+    "allow-dismiss-tray-messages",
+    "allow-open-download-path",
     "allow-get-taskbar-unread-state",
     "allow-show-tray-preview-for-test",
     "allow-get-desktop-runtime-state"

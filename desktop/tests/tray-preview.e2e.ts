@@ -129,6 +129,11 @@ test('native tray preview fits, accumulates session counts, shows avatars and op
     await expect.poll(() => browser.frameLocator('iframe.iv-frame').getByText('微信桌面测试画布').isVisible()).toBe(true);
     await expect.poll(() => browser.evaluate(async () => {
       return (await (window as any).__TAURI__.core.invoke('get_taskbar_unread_state'))[0];
+    })).toBe(7);
+    await browser.evaluate(() => (window as any).__TAURI__.core.invoke('show_tray_preview_for_test'));
+    await preview.locator('.dismiss-all').click();
+    await expect.poll(() => browser.evaluate(async () => {
+      return (await (window as any).__TAURI__.core.invoke('get_taskbar_unread_state'))[0];
     })).toBe(0);
   } finally {
     await connection.close();

@@ -206,7 +206,7 @@ export function pasteImageHttpError(status: number, size: number): string {
 }
 
 // 原始二进制上传（File 直传 application/octet-stream），带上传进度（fetch 拿不到上传进度，这里用 XHR）
-async function rawUpload(url: string, file: Blob, onProgress?: UploadProgress): Promise<any> {
+async function rawUpload(url: string, file: Blob, onProgress?: UploadProgress, headers?: Record<string, string>): Promise<any> {
   // 先发个普通请求探路：登录已失效、或反代身份网关要重新认证（apiFetch 会整页重载去认证）时，在这里就拦下，
   // 不至于几个 GB 传完才发现被挡在门外
   const probe = await apiFetch('/api/auth/me', { credentials: 'same-origin' });
@@ -218,6 +218,7 @@ async function rawUpload(url: string, file: Blob, onProgress?: UploadProgress): 
     const xhr = new XMLHttpRequest();
     xhr.open('POST', url);
     xhr.setRequestHeader('content-type', 'application/octet-stream');
+    for (const [name, value] of Object.entries(headers || {})) xhr.setRequestHeader(name, value);
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) onProgress?.(e.loaded, e.total);
     };
@@ -266,7 +267,8 @@ async function waitVolumeJob(id: string, job: string, onStage?: (stage: string) 
 // 本页面的「查看者」标识，每次整页加载生成一个。同一实例同一时间只在一处显示：面板据此认出被别处接管的页面，
 // 挡住它的自动重连和输入（见服务端「单连接」）。用 getRandomValues 而不是 randomUUID：后者只在 HTTPS 下有。
 export const VIEWER_ID = Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, '0')).join('');
-const viewerHeader = { 'x-woc-viewer': VIEWER_ID };
+export const WEFLOW_SCREEN = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('screen') === 'weflow';
+const viewerHeader = { 'x-woc-viewer': VIEWER_ID, 'x-woc-screen': WEFLOW_SCREEN ? 'weflow' : 'wechat' };
 
 async function req<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
   // 仅在有 body 时声明 JSON content-type：否则 Fastify 对「空 body + application/json」会报 400
@@ -325,6 +327,23 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ dark }),
     }),
+
+  // PWA 消息通知：订阅由浏览器生成，服务端以 WeFlow 新消息为数据源发送 Web Push。
+  notificationConfig: () => req<{ supported: boolean; publicKey: string; subscribed: boolean }>('/api/notifications/config'),
+  subscribeNotifications: (subscription: PushSubscriptionJSON) =>
+    req<{ ok: boolean }>('/api/notifications/subscribe', {
+      method: 'POST',
+      body: JSON.stringify({ subscription }),
+    }),
+  unsubscribeNotifications: (endpoint: string) =>
+    req<{ ok: boolean }>('/api/notifications/unsubscribe', {
+      method: 'POST',
+      body: JSON.stringify({ endpoint }),
+    }),
+  testNotification: () => req<{ ok: boolean }>('/api/notifications/test', { method: 'POST' }),
+  markNotificationsRead: (tag?: string) => req<{ ok: boolean }>('/api/notifications/read', {
+    method: 'POST', body: JSON.stringify(tag ? { tag } : { all: true }),
+  }),
 
   // 子账号
   listUsers: () => req<{ users: PanelUser[] }>('/api/admin/users'),
@@ -419,10 +438,10 @@ export const api = {
   panelLogUrl: (range: string) => `/api/admin/panel-log?range=${encodeURIComponent(range)}`,
 
   // 文件中转
-  listFiles: (id: string) => req<{ files: { name: string; size: number; mtime?: number }[] }>(`/api/instances/${id}/files`),
-  uploadFile: async (id: string, file: File, onProgress?: UploadProgress) => {
+  listFiles: (id: string) => req<{ files: { name: string; size: number; mtime?: number; source?: 'desktop' | 'wechat'; path?: string }[] }>(`/api/instances/${id}/files`),
+  uploadFile: async (id: string, file: File, onProgress?: UploadProgress, send = false) => {
     assertUploadSize(file, UPLOAD_LIMITS.transfer);
-    return rawUpload(`/api/instances/${id}/upload?name=${encodeURIComponent(file.name)}`, file, onProgress);
+    return rawUpload(`/api/instances/${id}/upload?name=${encodeURIComponent(file.name)}${send ? '&send=1' : ''}`, file, onProgress, viewerHeader);
   },
   // 本机剪贴板图片 → 容器 X 剪贴板 → Ctrl+V（issue #91）。调用方先用 fitPasteImage 把图压到 1MB 以内（#165）。
   // 每条失败路径都要落到一个能看懂、能照着做的错误上，且有超时：此前反代回 413 时只报「粘贴图片失败」，
@@ -455,7 +474,26 @@ export const api = {
     if (!data?.ok) throw new Error('粘贴结果未知（收到的不是面板的响应），请刷新页面后重试');
     return data;
   },
-  downloadFileUrl: (id: string, name: string) => `/api/instances/${id}/download?name=${encodeURIComponent(name)}`,
+  clipboardImage: async (id: string): Promise<Blob> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20_000);
+    try {
+      const res = await apiFetch(`/api/instances/${id}/clipboard-image`, {
+        credentials: 'same-origin', cache: 'no-store', headers: viewerHeader, signal: controller.signal,
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || '读取剪贴板图片失败');
+      if (!res.headers.get('content-type')?.startsWith('image/png')) throw new Error('收到的图片响应无效，请刷新云微后重试');
+      return await res.blob();
+    } catch (error) {
+      if (controller.signal.aborted) throw new Error('读取图片超时，请检查连接后重试');
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  },
+  downloadFileUrl: (id: string, name: string, received?: string) => received
+    ? `/api/instances/${id}/download?received=${encodeURIComponent(received)}`
+    : `/api/instances/${id}/download?name=${encodeURIComponent(name)}`,
   deleteFile: (id: string, name: string) => req(`/api/instances/${id}/files?name=${encodeURIComponent(name)}`, { method: 'DELETE' }),
 
   // 数据卷管理（仅管理员）

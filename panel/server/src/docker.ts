@@ -1621,6 +1621,118 @@ async function execCapture(inst: Instance, cmd: string[], user = 'abc'): Promise
   });
 }
 
+// WeFlow runs inside the instance and binds its API to loopback. Query it through
+// Docker exec so the instance network stays isolated from the panel network.
+// The token is read inside the instance and never crosses the API boundary.
+export async function weflowApi(inst: Instance, path: string): Promise<any> {
+  if (!/^\/api\/v1\/[a-z-]+(?:\?[A-Za-z0-9_.~!$&'()*+,;=:@%/?-]*)?$/.test(path)) {
+    throw new Error('WeFlow API path is invalid');
+  }
+  const script = [
+    'import json,sys,urllib.request',
+    "cfg=json.load(open('/config/weflow/data/profile/WeFlow-config.json'))",
+    "req=urllib.request.Request('http://127.0.0.1:5031'+sys.argv[1],headers={'Authorization':'Bearer '+cfg['httpApiToken']})",
+    "print(urllib.request.urlopen(req,timeout=8).read().decode('utf-8'))",
+  ].join(';');
+  const raw = await execCapture(inst, ['python3', '-c', script, path]);
+  return JSON.parse(raw);
+}
+
+export async function weflowAvailable(inst: Instance): Promise<boolean> {
+  try {
+    await execCapture(inst, ['test', '-f', '/config/weflow/data/profile/WeFlow-config.json']);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function consumeWeFlowMessagePush(
+  inst: Instance,
+  onEvent: (event: any) => void,
+): Promise<void> {
+  try {
+    await execCapture(inst, ['pkill', '-f', '[w]oc-panel-message-push-listener']);
+  } catch { /* No previous listener is the normal startup case. */ }
+  const script = [
+    'import json,urllib.request',
+    "cfg=json.load(open('/config/weflow/data/profile/WeFlow-config.json'))",
+    "req=urllib.request.Request('http://127.0.0.1:5031/api/v1/push/messages?lastEventId=9007199254740991',headers={'Authorization':'Bearer '+cfg['httpApiToken'],'Accept':'text/event-stream'})",
+    "response=urllib.request.urlopen(req,timeout=60)",
+    "exec(\"for raw in response:\\n line=raw.decode('utf-8','replace').strip()\\n if line.startswith('data:'):\\n  print(line[5:].strip(),flush=True)\\n elif line.startswith(':'):\\n  print('',flush=True)\")",
+  ].join(';');
+  const container = docker.getContainer(inst.containerName);
+  const exec = await execCreate(container, {
+    Cmd: ['python3', '-u', '-c', script, 'woc-panel-message-push-listener'],
+    AttachStdout: true,
+    AttachStderr: true,
+    Tty: false,
+    User: 'abc',
+  });
+  const stream = await exec.start({ hijack: true, stdin: false });
+
+  await new Promise<void>((resolve, reject) => {
+    let buffer = '';
+    let stderr = '';
+    const stdout = {
+      write(chunk: Buffer) {
+        buffer += chunk.toString('utf8');
+        for (;;) {
+          const newline = buffer.indexOf('\n');
+          if (newline < 0) break;
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (!line) continue;
+          try { onEvent(JSON.parse(line)); } catch { /* Ignore malformed or partial stream events. */ }
+        }
+      },
+    } as any;
+    const errorOutput = { write: (chunk: Buffer) => { stderr += chunk.toString('utf8'); } } as any;
+    docker.modem.demuxStream(stream, stdout, errorOutput);
+    stream.on('end', async () => {
+      try {
+        const info = await exec.inspect();
+        if (info.ExitCode && info.ExitCode !== 0) {
+          reject(new Error((stderr || `WeFlow message stream exited with ${info.ExitCode}`).trim()));
+        } else {
+          resolve();
+        }
+      } catch (error) {
+        reject(error);
+      }
+    });
+    stream.on('error', reject);
+  });
+}
+
+export async function stopWeFlowMessagePush(inst: Instance): Promise<void> {
+  await execCapture(inst, ['pkill', '-f', '[w]oc-panel-message-push-listener']).catch(() => {});
+}
+
+export async function setWeFlowConsumer(
+  inst: Instance, kind: 'notifications' | 'desktop', active: boolean,
+): Promise<void> {
+  const marker = `/tmp/woc-weflow-consumer-${kind}`;
+  await execCapture(inst, active ? ['touch', marker] : ['rm', '-f', marker]).catch(() => {});
+}
+
+export async function weflowMutedSessions(inst: Instance): Promise<Set<string>> {
+  const script = [
+    'import json',
+    "data=json.load(open('/config/weflow/data/muted-sessions.json'))",
+    "assert data.get('source') in ('wechat-native-v1:group.notify=0;direct.flag&0x200','wechat-native-v2:group.notify=0;direct.flag&0x200;system.brandsessionholder'), 'WeFlow notification settings bridge needs updating'",
+    "muted=data.get('muted')",
+    "assert isinstance(muted,list)",
+    "print(json.dumps(muted))",
+  ].join(';');
+  const raw = await execCapture(inst, ['python3', '-c', script]);
+  const muted = JSON.parse(raw);
+  if (!Array.isArray(muted) || muted.some((x) => typeof x !== 'string')) {
+    throw new Error('WeFlow muted session data is invalid');
+  }
+  return new Set([...muted, 'brandsessionholder']);
+}
+
 // 触发下载/安装（detached，立即返回，后台下载）。按实例 appType 分发：app-ctl.sh wechat → 委托回
 // wechat-ctl.sh；telegram 等各自实现。兼容旧容器（升级前镜像里没有 /woc/app-ctl.sh）：有则用之，无则
 // 回退老的 wechat-ctl.sh（旧实例都是微信）。appType 取值受 instanceAppType 约束，可安全内插进 shell。
@@ -2152,23 +2264,65 @@ export interface TransferFile {
   name: string;
   size: number;
   mtime: number; // 秒级 Unix 时间
+  source?: 'desktop' | 'wechat';
+  path?: string;
 }
 export async function listInstanceFiles(inst: Instance): Promise<TransferFile[]> {
-  const out = await execCapture(inst, [
+  const desktopOut = await execCapture(inst, [
     'sh',
     '-c',
     `find ${TRANSFER_DIR} -maxdepth 1 -type f -printf '%f\\t%s\\t%T@\\n' 2>/dev/null`,
   ]);
   // 按修改时间倒序：最常见的用法是「刚在微信里另存到桌面 → 马上来下载」，最新的应在最上面。
   // （此前是 find 的目录原始顺序，文件一多就得在乱序列表里找。）
-  return out
+  const desktop = desktopOut
     .split('\n')
     .filter(Boolean)
     .map((line) => {
       const [name, size, mtime] = line.split('\t');
-      return { name, size: Number(size) || 0, mtime: Math.round(Number(mtime) || 0) };
+      return { name, size: Number(size) || 0, mtime: Math.round(Number(mtime) || 0), source: 'desktop' as const };
     })
-    .sort((a, b) => b.mtime - a.mtime || a.name.localeCompare(b.name));
+  const receivedOut = await execCapture(inst, [
+    'find', '/config/xwechat_files', '-type', 'f', '-path', '*/msg/file/*/*', '-printf', '%p\t%s\t%T@\n',
+  ]).catch(() => '');
+  const received = receivedOut.split('\n').filter(Boolean).flatMap((line): TransferFile[] => {
+    const [absPath, size, mtime] = line.split('\t');
+    const marker = '/msg/file/';
+    const at = absPath.indexOf(marker);
+    if (at < 0) return [];
+    const path = absPath.slice(at + marker.length);
+    const parts = path.split('/');
+    if (parts.length !== 2 || !/^\d{4}-\d{2}$/.test(parts[0]) || !safeName(parts[1])) return [];
+    return [{ name: parts[1], size: Number(size) || 0, mtime: Math.round(Number(mtime) || 0), source: 'wechat', path }];
+  });
+  return [...desktop, ...received].sort((a, b) => b.mtime - a.mtime || a.name.localeCompare(b.name));
+}
+
+export async function pasteFileInInstance(inst: Instance, name: string, weflow = false): Promise<void> {
+  assertSafeName(name);
+  const path = `${TRANSFER_DIR}/${name}`;
+  await withClipLock(screenKey(inst, weflow), async () => {
+    if (cancelClipRestore(screenKey(inst, weflow))) await restoreClipboard(inst, weflow);
+    const cmd = [
+      ...screenPrelude(weflow),
+      CLIP_DISCARD,
+      'uri=$(python3 -c "import pathlib,sys; print(pathlib.Path(sys.argv[1]).as_uri())" "$1")',
+      'printf "%s\\r\\n" "$uri" | xclip -selection clipboard -t text/uri-list -i >/dev/null 2>&1',
+      xdoKey('ctrl+v'),
+    ].join('\n');
+    await execCapture(inst, ['bash', '-c', screenCommand(cmd, weflow), 'woc-file', path]);
+  });
+}
+
+export async function downloadReceivedFile(inst: Instance, path: string): Promise<{ size: number; stream: NodeJS.ReadableStream }> {
+  const [month, name, extra] = String(path || '').split('/');
+  if (extra !== undefined || !/^\d{4}-\d{2}$/.test(month) || !safeName(name)) throw new Error('文件路径不合法');
+  const escapedName = name.replace(/([*?[\]\\])/g, '\\$1');
+  const found = (await execCapture(inst, [
+    'find', '/config/xwechat_files', '-type', 'f', '-path', `*/msg/file/${month}/${escapedName}`, '-print', '-quit',
+  ], 'root')).trim();
+  if (!found || !found.startsWith('/config/xwechat_files/') || found.includes('\n')) throw new Error('文件不存在或尚未下载完成');
+  return streamRegularFile(inst, found);
 }
 
 export async function deleteInstanceFile(inst: Instance, name: string): Promise<void> {
@@ -2361,25 +2515,28 @@ function cancelClipRestore(id: string): boolean {
 }
 // 打字 / 单键 / 归还这几条每打一个词都要跑，用 sh（实例里是 dash）而不是 bash：脚本全是 POSIX，dash 启动更轻。
 // 开发机上实测差别 ≤1ms，但有用户在自己的机器上测得 bash -c true 73ms、sh -c true 36ms（#155）；行为不变，就用 sh。
-async function restoreClipboard(inst: Instance): Promise<void> {
-  await execCapture(inst, ['sh', '-c', [...X_PRELUDE, CLIP_RESTORE].join('\n')]).catch(() => {});
+const screenPrelude = (weflow: boolean) => weflow ? [...X_PRELUDE, "export DISPLAY=:2"] : X_PRELUDE;
+const screenCommand = (cmd: string, weflow: boolean) => weflow ? cmd.replaceAll("/tmp/.woc-clip", "/tmp/.woc-clip-weflow") : cmd;
+const screenKey = (inst: Instance, weflow: boolean) => weflow ? `${inst.id}:weflow` : inst.id;
+async function restoreClipboard(inst: Instance, weflow = false): Promise<void> {
+  await execCapture(inst, ['sh', '-c', screenCommand([...screenPrelude(weflow), CLIP_RESTORE].join('\n'), weflow)]).catch(() => {});
 }
-function scheduleClipRestore(inst: Instance): void {
-  cancelClipRestore(inst.id);
+function scheduleClipRestore(inst: Instance, weflow = false): void {
+  cancelClipRestore(screenKey(inst, weflow));
   const t = setTimeout(() => {
-    clipTimers.delete(inst.id);
-    void withClipLock(inst.id, () => restoreClipboard(inst));
+    clipTimers.delete(screenKey(inst, weflow));
+    void withClipLock(screenKey(inst, weflow), () => restoreClipboard(inst, weflow));
   }, CLIP_RESTORE_MS);
   t.unref?.();
-  clipTimers.set(inst.id, t);
+  clipTimers.set(screenKey(inst, weflow), t);
 }
 
 // 通过 xdotool 在实例容器内输入文字（绕过 VNC keysym 限制，解决中文 IME 吞字问题）。
 // 用 base64 传递文本避免 shell 转义问题，xclip 写入剪贴板后 xdotool 模拟 Ctrl+V 粘贴；剪贴板打完归还（见上）。
-export async function typeInInstance(inst: Instance, text: string): Promise<void> {
+export async function typeInInstance(inst: Instance, text: string, weflow = false): Promise<void> {
   const b64 = Buffer.from(text, 'utf8').toString('base64');
   const cmd = [
-    ...X_PRELUDE,
+    ...screenPrelude(weflow),
     CLIP_SAVE,
     `echo '${b64}' | base64 -d > ${CLIP_DIR}/typed.txt`,
     // xclip -i 会 daemon 化常驻持有剪贴板选区，并继承 exec 的 stdout/stderr；不重定向的话 docker exec
@@ -2387,12 +2544,12 @@ export async function typeInInstance(inst: Instance, text: string): Promise<void
     `xclip -selection clipboard -i ${CLIP_DIR}/typed.txt >/dev/null 2>&1`,
     xdoKey('ctrl+v'),
   ].join('\n');
-  await withClipLock(inst.id, async () => {
-    cancelClipRestore(inst.id);
+  await withClipLock(screenKey(inst, weflow), async () => {
+    cancelClipRestore(screenKey(inst, weflow));
     try {
-      await execCapture(inst, ['sh', '-c', cmd]);
+      await execCapture(inst, ['sh', '-c', screenCommand(cmd, weflow)]);
     } finally {
-      scheduleClipRestore(inst);
+      scheduleClipRestore(inst, weflow);
     }
   });
 }
@@ -2400,19 +2557,19 @@ export async function typeInInstance(inst: Instance, text: string): Promise<void
 // 把本机剪贴板里的文字粘进应用：粘贴桥判断本机剪贴板比容器的新时走这里（在别处复制后回来直接 Ctrl+V、
 // 局域网 http 下浏览器不同步剪贴板）。与打字不同，这是用户有意换内容，贴完文字就留在容器剪贴板里。
 // 文字可能很长，经文件传入（单个命令行参数有 128KB 上限）。
-export async function pasteTextInInstance(inst: Instance, text: string): Promise<void> {
+export async function pasteTextInInstance(inst: Instance, text: string, weflow = false): Promise<void> {
   const name = `woc-paste-${Date.now()}.txt`;
-  await withClipLock(inst.id, async () => {
-    cancelClipRestore(inst.id);
+  await withClipLock(screenKey(inst, weflow), async () => {
+    cancelClipRestore(screenKey(inst, weflow));
     await docker.getContainer(inst.containerName).putArchive(tarSingleFile(name, Buffer.from(text, 'utf8')), { path: '/tmp' });
     const cmd = [
-      ...X_PRELUDE,
+      ...screenPrelude(weflow),
       CLIP_DISCARD,
       `xclip -selection clipboard -i /tmp/${name} >/dev/null 2>&1`,
       `rm -f /tmp/${name}`,
       xdoKey('ctrl+v'),
     ].join('\n');
-    await execCapture(inst, ['bash', '-c', cmd]);
+    await execCapture(inst, ['bash', '-c', screenCommand(cmd, weflow)]);
   });
 }
 
@@ -2463,21 +2620,23 @@ export async function instanceAcceptsLargePng(inst: Instance): Promise<boolean> 
   }
 }
 
-export async function pasteImageInInstance(inst: Instance, mime: string, content: Buffer, allowLargePng = false): Promise<void> {
+export async function pasteImageInInstance(inst: Instance, mime: string, content: Buffer, allowLargePng = false, weflow = false): Promise<void> {
   const ext = PASTE_IMAGE_TYPES[mime];
   if (!ext) throw new Error('不支持的图片类型');
   if (mime === 'image/png' && content.length > PASTE_IMAGE_PNG_MAX && !allowLargePng) throw new Error(PASTE_IMAGE_PNG_TOO_BIG);
   const name = `woc-paste-${Date.now()}.${ext}`;
-  await withClipLock(inst.id, async () => {
-    cancelClipRestore(inst.id); // 有意换成这张图，之前打字借用的剪贴板不再归还
+  await withClipLock(screenKey(inst, weflow), async () => {
+    cancelClipRestore(screenKey(inst, weflow)); // 有意换成这张图，之前打字借用的剪贴板不再归还
     await docker.getContainer(inst.containerName).putArchive(tarSingleFile(name, content), { path: '/tmp' });
     const cmd = [
-      ...X_PRELUDE,
+      ...screenPrelude(weflow),
       CLIP_DISCARD,
       "find /tmp -maxdepth 1 -name 'woc-paste-*' -mmin +10 -delete 2>/dev/null || true",
       // 先清掉还活着的 xclip 持有者：正常情况下它们一失去选区就退出，但卡在 INCR 里的（见上，旧版本留下的）永远不退、
       // 各自攥着整张图；这里本来就要换成新内容，清掉没有损失
-      "pkill -f '^xclip .*-i /tmp/' 2>/dev/null || true",
+      // Other display sessions may own independent clipboard selections.
+      // A broad pkill here would also terminate those sessions' clipboard owners.
+      ':',
       // 同 typeInInstance：xclip 常驻后台持有选区，必须重定向 fd，否则 docker exec 要等它退出（~2s）
       `xclip -selection clipboard -t ${mime} -i /tmp/${name} >/dev/null 2>&1`,
       // 按 Ctrl+V 之前确认剪贴板读得出这张图：万一仍卡住（别的 X 服务器上限、别的配置），这时按下去应用会跟着卡死，
@@ -2496,7 +2655,37 @@ export async function pasteImageInInstance(inst: Instance, mime: string, content
       'done',
       xdoKey('ctrl+v'),
     ].join('\n');
-    await execCapture(inst, ['bash', '-c', cmd]);
+    await execCapture(inst, ['bash', '-c', screenCommand(cmd, weflow)]);
+  });
+}
+
+// PR #162：读取应用复制的图片，绕过 KasmVNC 已禁用的 PNG 同步。
+// 与输入共用各显示会话的锁，避免读取到无感输入临时借用的剪贴板。
+export const CLIPBOARD_IMAGE_MAX = 64 * 1024 * 1024;
+export async function readClipboardImage(inst: Instance, weflow = false): Promise<Buffer> {
+  return withClipLock(screenKey(inst, weflow), async () => {
+    if (cancelClipRestore(screenKey(inst, weflow))) await restoreClipboard(inst, weflow);
+    const cmd = [
+      ...screenPrelude(weflow),
+      'targets=$(timeout 2 xclip -o -selection clipboard -t TARGETS 2>/dev/null) || { echo "读取应用剪贴板失败，请在应用里重新复制图片后重试" >&2; exit 1; }',
+      'printf "%s\\n" "$targets" | grep -qxF image/png || { echo "剪贴板里没有图片，请先在应用里复制图片" >&2; exit 3; }',
+      // execCapture 按 UTF-8 收取 stdout；先 base64 保证二进制完整，并限制输出大小。
+      'set +e',
+      `timeout 10 xclip -o -selection clipboard -t image/png 2>/dev/null | head -c ${CLIPBOARD_IMAGE_MAX + 1} | base64 -w0`,
+      'rc=("${PIPESTATUS[@]}")',
+      // head 达到上限会让 xclip 收到 SIGPIPE(141)，大小错误由解码后的长度判断。
+      'if { [ "${rc[0]}" -ne 0 ] && [ "${rc[0]}" -ne 141 ]; } || [ "${rc[1]}" -ne 0 ] || [ "${rc[2]}" -ne 0 ]; then',
+      '  echo "读取剪贴板图片失败或超时，请重新复制图片后重试" >&2; exit 1',
+      'fi',
+    ].join('\n');
+    const png = Buffer.from((await execCapture(inst, ['bash', '-c', cmd])).trim(), 'base64');
+    if (png.length > CLIPBOARD_IMAGE_MAX) throw new Error('图片超过 64 MiB，无法复制');
+    const signature = Buffer.from('89504e470d0a1a0a', 'hex');
+    const end = Buffer.from('0000000049454e44ae426082', 'hex');
+    if (png.length < 45 || !png.subarray(0, 8).equals(signature) || !png.subarray(-12).equals(end)) {
+      throw new Error('剪贴板图片不完整或格式无效，请重新复制图片后重试');
+    }
+    return png;
   });
 }
 
@@ -2504,7 +2693,7 @@ export async function pasteImageInInstance(inst: Instance, mime: string, content
 // 用于「无感输入」模式：中文经 xclip 转发期间，把被截下的回车/退格按序送出，保证顺序、避免抢跑。
 // key 为 xdotool keysym 名，可带至多 3 个修饰键前缀（如 ctrl+v、ctrl+shift+Tab）；
 // 只允许字母 / 下划线 / 固定修饰键名与 "+"，杜绝 shell 注入。
-export async function keyInInstance(inst: Instance, key: string): Promise<void> {
+export async function keyInInstance(inst: Instance, key: string, weflow = false): Promise<void> {
   if (!/^(?:(?:ctrl|shift|alt|super)\+){0,3}[A-Za-z_]{1,20}$/.test(key)) throw new Error('按键名不合法');
   const cmd = [
     'set -e',
@@ -2512,16 +2701,17 @@ export async function keyInInstance(inst: Instance, key: string): Promise<void> 
     'if [ -z "$display" ]; then for x in /tmp/.X11-unix/X*; do [ -e "$x" ] || continue; display=":${x##*X}"; break; done; fi',
     'export DISPLAY="${display:-:1}"',
     'command -v xdotool >/dev/null 2>&1 || { echo "xdotool not installed in instance image" >&2; exit 127; }',
+    ...(weflow ? ['export DISPLAY=:2'] : []),
     xdoKey(key),
   ].join('\n');
   if (!/^ctrl\+v$/i.test(key)) {
-    await execCapture(inst, ['sh', '-c', cmd]);
+    await execCapture(inst, ['sh', '-c', screenCommand(cmd, weflow)]);
     return;
   }
   // 粘贴：打字借用的剪贴板若还没归还，先归还再按，免得贴出刚打的字
-  await withClipLock(inst.id, async () => {
-    if (cancelClipRestore(inst.id)) await restoreClipboard(inst);
-    await execCapture(inst, ['sh', '-c', cmd]);
+  await withClipLock(screenKey(inst, weflow), async () => {
+    if (cancelClipRestore(screenKey(inst, weflow))) await restoreClipboard(inst, weflow);
+    await execCapture(inst, ['sh', '-c', screenCommand(cmd, weflow)]);
   });
 }
 

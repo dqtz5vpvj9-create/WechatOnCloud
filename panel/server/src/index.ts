@@ -72,12 +72,15 @@ import {
   uploadToInstance,
   listInstanceFiles,
   downloadFromInstance,
+  downloadReceivedFile,
   deleteInstanceFile,
+  pasteFileInInstance,
   instanceLogs,
   buildDiagnostics,
   typeInInstance,
   keyInInstance,
   pasteImageInInstance,
+  readClipboardImage,
   PASTE_IMAGE_PNG_MAX,
   instanceAcceptsLargePng,
   PASTE_IMAGE_PNG_TOO_BIG,
@@ -117,6 +120,7 @@ import {
   configureInstanceMigration,
   instanceMigrationStatus,
   checkInstanceMigration,
+  setWeFlowConsumer,
 } from './docker.js';
 import { parseMigrationConfig, migrationErrorMessage, type MigrationConfig } from './migration.js';
 import { createSession, getSession, destroySession, destroyUserSessions, SESSION_TTL_MS } from './sessions.js';
@@ -130,6 +134,16 @@ import { CURRENT_VERSION, versionInfo, ensureChecked, checkForUpdate, startUpdat
 import { triggerSelfUpdate } from './self-update.js';
 import { GiB, MiB, readBody, receiveFile, spoolUpload, cleanSpoolDir, type Spooled } from './upload.js';
 import { appendInstanceLog, readInstanceLog, appendPanelLog, readPanelLog, pruneOldLogs, filterSince, rangeToMs, DIAG_RANGES } from './logs.js';
+import {
+  addLiveSubscriber,
+  pushPublicKey,
+  removePushSubscription,
+  savePushSubscription,
+  sendTestPush,
+  startNotificationWatcher,
+  userHasPush,
+  markNotificationsRead,
+} from './notifications.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -349,6 +363,80 @@ app.get('/api/auth/me', async (req, reply) => {
   const u = currentUser(req);
   if (!u) return reply.code(401).send({ error: '未登录' });
   return { user: publicUser(u) };
+});
+
+// ---------- Web Push 通知（消息源由实例内 WeFlow 提供） ----------
+app.get('/api/notifications/config', async (req, reply) => {
+  const u = requireAuth(req, reply);
+  if (!u) return;
+  return { supported: true, publicKey: pushPublicKey(), subscribed: userHasPush(u.id) };
+});
+
+app.get('/api/notifications/stream', async (req, reply) => {
+  const u = requireAuth(req, reply);
+  if (!u) return;
+  reply.hijack();
+  reply.raw.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache, no-transform',
+    connection: 'keep-alive',
+    'x-accel-buffering': 'no',
+  });
+  reply.raw.write('retry: 3000\n\n');
+  const remove = addLiveSubscriber(u.id, (payload) => {
+    reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+  });
+  const keepAlive = setInterval(() => reply.raw.write(': keepalive\n\n'), 20_000);
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    clearInterval(keepAlive);
+    remove();
+  };
+  reply.raw.once('close', close);
+  reply.raw.once('error', close);
+});
+
+app.post('/api/notifications/read', async (req, reply) => {
+  const u = requireAuth(req, reply);
+  if (!u) return;
+  const all = (req.body as any)?.all === true;
+  const tag = String((req.body as any)?.tag || '');
+  if (!all && (!tag.startsWith('wechat-') || tag.length > 512)) {
+    return reply.code(400).send({ error: '通知标识无效' });
+  }
+  markNotificationsRead(u, all ? undefined : tag);
+  return { ok: true };
+});
+
+app.post('/api/notifications/subscribe', { bodyLimit: 16 * 1024 }, async (req, reply) => {
+  const u = requireAuth(req, reply);
+  if (!u) return;
+  try {
+    savePushSubscription(u.id, (req.body as any)?.subscription);
+    return { ok: true };
+  } catch (e: any) {
+    return reply.code(400).send({ error: e?.message || '订阅通知失败' });
+  }
+});
+
+app.post('/api/notifications/unsubscribe', { bodyLimit: 8 * 1024 }, async (req, reply) => {
+  const u = requireAuth(req, reply);
+  if (!u) return;
+  removePushSubscription(u.id, String((req.body as any)?.endpoint || ''));
+  return { ok: true };
+});
+
+app.post('/api/notifications/test', async (req, reply) => {
+  const u = requireAuth(req, reply);
+  if (!u) return;
+  try {
+    await sendTestPush(u);
+    return { ok: true };
+  } catch (e: any) {
+    return reply.code(502).send({ error: e?.message || '测试通知发送失败' });
+  }
 });
 
 // ---------- 版本与更新检测 ----------
@@ -1056,10 +1144,19 @@ app.post('/api/instances/:id/upload', async (req, reply) => {
   const inst = findInstance(id);
   if (!inst) return reply.code(404).send({ error: '实例不存在' });
   const name = String((req.query as any)?.name || '').trim();
+  const send = (req.query as any)?.send === '1';
+  if (send) {
+    const busy = claimControl(u, id, req);
+    if (busy) return reply.code(409).send(busy);
+  }
+  let uploaded = false;
   try {
     await receiveFile(req, UPLOAD_LIMIT_TRANSFER, (size, body) => uploadToInstance(inst, name, size, body));
+    uploaded = true;
+    if (send) await pasteFileInInstance(inst, name, useWeFlow(req, id));
     return { ok: true };
   } catch (e: any) {
+    if (uploaded) return reply.code(500).send({ error: `文件已上传，但放入当前聊天失败：${e?.message || '请重试'}`, uploaded: true });
     return sendUploadError(reply, e, '上传失败');
   }
 });
@@ -1099,11 +1196,15 @@ app.get('/api/instances/:id/download', async (req, reply) => {
   const id = (req.params as any).id;
   if (!userCanAccess(u, id)) return reply.code(403).send({ error: '无权访问该实例' });
   const name = String((req.query as any)?.name || '').trim();
+  const receivedPath = String((req.query as any)?.received || '').trim();
   try {
-    const { size, stream } = await downloadFromInstance(findInstance(id)!, name);
+    const { size, stream } = receivedPath
+      ? await downloadReceivedFile(findInstance(id)!, receivedPath)
+      : await downloadFromInstance(findInstance(id)!, name);
+    const downloadName = receivedPath ? receivedPath.split('/').pop()! : name;
     reply.header('content-type', 'application/octet-stream');
     reply.header('content-length', String(size));
-    reply.header('content-disposition', `attachment; filename*=UTF-8''${encodeURIComponent(name)}`);
+    reply.header('content-disposition', `attachment; filename*=UTF-8''${encodeURIComponent(downloadName)}`);
     return reply.send(stream);
   } catch (e: any) {
     return reply.code(400).send({ error: e?.message || '下载失败' });
@@ -1113,6 +1214,8 @@ app.get('/api/instances/:id/download', async (req, reply) => {
 // ---------- 多端协作：操作控制权（心跳软锁，避免多人同时操作打架） ----------
 // 同一实例被多个浏览器连的是同一会话，键鼠会互相打架。这里用"心跳持锁"：
 // 当前操作者每隔几秒 beat 续约；TTL 内他人只读（前端盖只读遮罩）。空闲超 TTL 自动释放。
+const displayKey = (id: string, req: FastifyRequest) => req.headers["x-woc-screen"] === "weflow" && id === "ad22dcbaa6" ? `${id}:weflow` : id;
+const useWeFlow = (req: FastifyRequest, id: string) => displayKey(id, req) !== id;
 const CONTROL_TTL = 10_000; // ms：超过则视为已空闲，可被接管
 const controlHolders = new Map<string, { userId: string; username: string; at: number }>();
 
@@ -1122,12 +1225,12 @@ app.post('/api/instances/:id/control/beat', async (req, reply) => {
   if (!u) return;
   const id = (req.params as any).id;
   if (!userCanAccess(u, id)) return reply.code(403).send({ error: '无权访问该实例' });
-  const sup = supersededBy(id, viewerOf(req));
+  const sup = supersededBy(displayKey(id, req), viewerOf(req));
   if (sup) return reply.code(409).send(supersededBusy(sup));
   const now = Date.now();
-  const h = controlHolders.get(id);
+  const h = controlHolders.get(displayKey(id, req));
   if (!h || now - h.at > CONTROL_TTL || h.userId === u.id) {
-    controlHolders.set(id, { userId: u.id, username: u.username, at: now });
+    controlHolders.set(displayKey(id, req), { userId: u.id, username: u.username, at: now });
     return { mine: true, holder: u.username };
   }
   return { mine: false, holder: h.username };
@@ -1140,8 +1243,8 @@ app.get('/api/instances/:id/control', async (req, reply) => {
   const id = (req.params as any).id;
   if (!userCanAccess(u, id)) return reply.code(403).send({ error: '无权访问该实例' });
   // 顺带告诉前端：这个页面是否已被别处打开的页面接管（见下方「单连接」）
-  const superseded = supersededBy(id, viewerOf(req));
-  const h = controlHolders.get(id);
+  const superseded = supersededBy(displayKey(id, req), viewerOf(req));
+  const h = controlHolders.get(displayKey(id, req));
   if (!h || Date.now() - h.at > CONTROL_TTL) return { free: true, mine: false, holder: null, superseded };
   return { free: false, mine: h.userId === u.id, holder: h.username, superseded };
 });
@@ -1152,9 +1255,9 @@ app.post('/api/instances/:id/control/take', async (req, reply) => {
   if (!u) return;
   const id = (req.params as any).id;
   if (!userCanAccess(u, id)) return reply.code(403).send({ error: '无权访问该实例' });
-  const sup = supersededBy(id, viewerOf(req));
+  const sup = supersededBy(displayKey(id, req), viewerOf(req));
   if (sup) return reply.code(409).send(supersededBusy(sup));
-  controlHolders.set(id, { userId: u.id, username: u.username, at: Date.now() });
+  controlHolders.set(displayKey(id, req), { userId: u.id, username: u.username, at: Date.now() });
   return { mine: true, holder: u.username };
 });
 
@@ -1223,12 +1326,12 @@ function attachViewer(instId: string, viewer: string, u: User, device: string, s
 // 已被别处接管的页面（见「单连接」）一律拒绝：同一账号在两处打开时控制权同属一人，挡不住它。
 // 返回拒绝的响应体，null = 可以操作。
 function claimControl(u: User, id: string, req: FastifyRequest): object | null {
-  const sup = supersededBy(id, viewerOf(req));
+  const sup = supersededBy(displayKey(id, req), viewerOf(req));
   if (sup) return supersededBusy(sup);
   const now = Date.now();
-  const h = controlHolders.get(id);
+  const h = controlHolders.get(displayKey(id, req));
   if (h && h.userId !== u.id && now - h.at <= CONTROL_TTL) return controlBusy(h.username);
-  controlHolders.set(id, { userId: u.id, username: u.username, at: now });
+  controlHolders.set(displayKey(id, req), { userId: u.id, username: u.username, at: now });
   return null;
 }
 const controlBusy = (holder: string) => ({ error: `「${holder}」正在操作，你当前为只读；要操作请先点「申请控制」`, holder });
@@ -1244,7 +1347,7 @@ app.post('/api/instances/:id/type', async (req, reply) => {
   const busy = claimControl(u, id, req);
   if (busy) return reply.code(409).send(busy);
   try {
-    await typeInInstance(findInstance(id)!, text);
+    await typeInInstance(findInstance(id)!, text, useWeFlow(req, id));
     return { ok: true };
   } catch (e: any) {
     return reply.code(500).send({ error: e?.message || '输入失败' });
@@ -1272,7 +1375,7 @@ app.post('/api/instances/:id/paste-image', async (req, reply) => {
   try {
     const body = await readBody(req, limit);
     if (!body.length) return reply.code(400).send({ error: '空图片' });
-    await pasteImageInInstance(inst, mime, body, largeOk);
+    await pasteImageInInstance(inst, mime, body, largeOk, useWeFlow(req, id));
     return { ok: true };
   } catch (e: any) {
     if (isPng && !largeOk && (Number(e?.statusCode) === 413 || e?.message === PASTE_IMAGE_PNG_TOO_BIG)) {
@@ -1281,6 +1384,24 @@ app.post('/api/instances/:id/paste-image', async (req, reply) => {
     // 粘贴前确认剪贴板读不出这张图（仍会卡住）：同样让前端压缩重试
     if (/容器剪贴板没有响应/.test(e?.message || '')) return reply.code(503).send({ error: e.message, code: 'clipboard_stuck' });
     return sendUploadError(reply, e, '粘贴图片失败');
+  }
+});
+
+// 应用图片 → 本机剪贴板。读取使用当前显示会话，不占用远端控制权。
+app.get('/api/instances/:id/clipboard-image', async (req, reply) => {
+  reply.header('Cache-Control', 'no-store');
+  const u = requireAuth(req, reply);
+  if (!u) return;
+  const id = (req.params as any).id;
+  if (!userCanAccess(u, id)) return reply.code(403).send({ error: '无权访问该实例' });
+  const inst = findInstance(id);
+  if (!inst) return reply.code(404).send({ error: '实例不存在' });
+  try {
+    return reply.type('image/png').send(await readClipboardImage(inst, useWeFlow(req, id)));
+  } catch (e: any) {
+    const message = e?.message || '读取剪贴板图片失败';
+    const status = /没有图片/.test(message) ? 422 : /超过 64 MiB/.test(message) ? 413 : 500;
+    return reply.code(status).send({ error: message });
   }
 });
 
@@ -1296,7 +1417,7 @@ app.post('/api/instances/:id/paste-text', { bodyLimit: 2 * 1024 * 1024 }, async 
   const busy = claimControl(u, id, req);
   if (busy) return reply.code(409).send(busy);
   try {
-    await pasteTextInInstance(findInstance(id)!, text);
+    await pasteTextInInstance(findInstance(id)!, text, useWeFlow(req, id));
     return { ok: true };
   } catch (e: any) {
     return reply.code(500).send({ error: e?.message || '粘贴失败' });
@@ -1313,7 +1434,7 @@ app.post('/api/instances/:id/key', async (req, reply) => {
   const busy = claimControl(u, id, req);
   if (busy) return reply.code(409).send(busy);
   try {
-    await keyInInstance(findInstance(id)!, key);
+    await keyInInstance(findInstance(id)!, key, useWeFlow(req, id));
     return { ok: true };
   } catch (e: any) {
     return reply.code(500).send({ error: e?.message || '按键失败' });
@@ -1781,19 +1902,29 @@ const proxy = httpProxy.createProxyServer({ changeOrigin: true, ws: true });
 // 不再产生键鼠事件，但 VNC WebSocket 通常仍保持连接；soft watchdog 应把它视为活跃会话。
 const activeVncSockets = new Map<string, Set<Socket>>();
 
-function trackActiveVncSocket(instId: string, socket: Socket) {
-  let sockets = activeVncSockets.get(instId);
+function trackActiveVncSocket(displayKey: string, socket: Socket) {
+  let sockets = activeVncSockets.get(displayKey);
   if (!sockets) {
     sockets = new Set<Socket>();
-    activeVncSockets.set(instId, sockets);
+    activeVncSockets.set(displayKey, sockets);
+    if (displayKey.endsWith(':weflow')) {
+      const inst = findInstance(displayKey.slice(0, -':weflow'.length));
+      if (inst) void setWeFlowConsumer(inst, 'desktop', true);
+    }
   }
   if (sockets.has(socket)) return;
   sockets.add(socket);
   socket.once('close', () => {
-    const current = activeVncSockets.get(instId);
+    const current = activeVncSockets.get(displayKey);
     if (!current) return;
     current.delete(socket);
-    if (current.size === 0) activeVncSockets.delete(instId);
+    if (current.size === 0) {
+      activeVncSockets.delete(displayKey);
+      if (displayKey.endsWith(':weflow')) {
+        const inst = findInstance(displayKey.slice(0, -':weflow'.length));
+        if (inst) void setWeFlowConsumer(inst, 'desktop', false);
+      }
+    }
   });
 }
 
@@ -1875,9 +2006,11 @@ proxy.on('proxyReqWs', (proxyReq, req, socket) => {
   // 上游（实例 nginx → KasmVNC websockify）回 101 = ws 接收器接受了连接，桌面真正连上。
   // 卡死时这条不会出现（接收器停止 accept），即可定位"卡在面板→实例之间还是实例内部"。
   const instId = (req as any)._wocInstId;
-  if (instId) {
+  const isVnc = (req.url || '').startsWith('/websockify');
+  if (instId && isVnc) {
+    const displayKey = (req as any)._wocDisplayKey || instId;
     proxyReq.on('upgrade', (_res, proxySocket: Socket) => {
-      trackActiveVncSocket(instId, req.socket as Socket);
+      trackActiveVncSocket(displayKey, req.socket as Socket);
       appendInstanceLog(instId, '[vnc] 上游已接受(101) · 桌面连接建立');
       // 客户端这侧一断，上游这侧跟着断。http-proxy 只在客户端「正常结束 / 出错」时才关上游，客户端套接字被
       // destroy（keepalive 判死、单连接接管时面板主动断开）时上游原样留着——实例里的 Xvnc 照旧当它在线：
@@ -1885,9 +2018,7 @@ proxy.on('proxyReqWs', (proxyReq, req, socket) => {
       (req.socket as Socket).once('close', () => proxySocket.destroy());
     });
     // 只盯 VNC 连接本身（/websockify）；音频桥等其它 ws 不计
-    if ((req.url || '').startsWith('/websockify')) {
-      watchUpstream(proxyReq, instId, '桌面连接（websocket 升级）', socket, () => socket.destroy());
-    }
+    watchUpstream(proxyReq, instId, '桌面连接（websocket 升级）', socket, () => socket.destroy());
   }
 });
 // 上游（面板→实例）套接字 TCP keepalive：客户端断网/切网（WiFi→4G、NAS 休眠）时 TCP 不会主动通知，
@@ -1949,14 +2080,16 @@ proxy.on('error', (_err, req, res) => {
 });
 
 // /desktop/:id/rest → rest（剥掉前缀与实例段）。返回 null 表示 url 非法。
-function parseDesktopUrl(rawUrl: string): { id: string; rest: string } | null {
+function parseDesktopUrl(rawUrl: string): { id: string; rest: string; weflow: boolean } | null {
   const m = rawUrl.match(/^\/desktop\/([0-9a-f]{6,})(\/.*|\?.*|)?$/);
   if (!m) return null;
   const id = m[1];
   let rest = m[2] || '/';
   if (rest.startsWith('?')) rest = '/' + rest;
   if (rest === '') rest = '/';
-  return { id, rest };
+  const weflow = id === "ad22dcbaa6" && (rest === "/weflow" || rest.startsWith("/weflow/") || rest.startsWith("/weflow?"));
+  if (weflow) rest = rest.slice(7) || "/";
+  return { id, rest, weflow };
 }
 
 const desktopHandler = (req: FastifyRequest, reply: FastifyReply) => {
@@ -1975,7 +2108,8 @@ const desktopHandler = (req: FastifyRequest, reply: FastifyReply) => {
   req.raw.url = parsed.rest;
   (req.raw as any)._wocAuth = basicAuth(inst);
   (req.raw as any)._wocInstId = inst.id;
-  proxy.web(req.raw, reply.raw, { target: instanceTarget(inst) });
+  (req.raw as any)._wocDisplayKey = parsed.weflow ? `${inst.id}:weflow` : inst.id;
+  proxy.web(req.raw, reply.raw, { target: parsed.weflow ? instanceTarget(inst).replace(":3000", ":3002") : instanceTarget(inst) });
 };
 
 app.all('/desktop/:id', desktopHandler);
@@ -2080,7 +2214,7 @@ app.server.on('upgrade', (req: IncomingMessage, socket: Socket, head: Buffer) =>
     q.searchParams.delete('woc_viewer');
     parsed.rest = q.pathname + q.search;
     viewer = v && VIEWER_ID_RE.test(v) ? v : null;
-    if (supersededBy(inst.id, viewer)) {
+    if (supersededBy(parsed.weflow ? `${inst.id}:weflow` : inst.id, viewer)) {
       if (!wsRejectThrottled(inst.id, 'superseded')) {
         appendInstanceLog(inst.id, '[vnc] 已被别处接管的页面在自动重连，已拒绝（该页面会提示「在这里继续使用」）');
       }
@@ -2091,12 +2225,13 @@ app.server.on('upgrade', (req: IncomingMessage, socket: Socket, head: Buffer) =>
   req.url = parsed.rest;
   (req as any)._wocAuth = basicAuth(inst);
   (req as any)._wocInstId = inst.id;
+  (req as any)._wocDisplayKey = parsed.weflow ? `${inst.id}:weflow` : inst.id;
   // 远程桌面连接日志：记录每次 ws 连接尝试 / 上游接受(在 proxyReqWs 里) / 失败 / 关闭时长。
   // 与实例容器内 KasmVNC 的 "got client connection" 按时间对齐，即可看出卡在哪一段。
   const ip = (req.socket && req.socket.remoteAddress) || '?';
   const uname = (u as any).username || '?';
   // 没带标识的（面板升级前打开、还没刷新的旧页面）每条连接当一个新页面：能接管，但挡不住它重连
-  if (isVnc) attachViewer(inst.id, viewer || `anon-${randomUUID()}`, u, deviceLabel(req.headers['user-agent']), socket);
+  if (isVnc) attachViewer(parsed.weflow ? `${inst.id}:weflow` : inst.id, viewer || `anon-${randomUUID()}`, u, deviceLabel(req.headers['user-agent']), socket);
   appendInstanceLog(inst.id, `[vnc] 连接尝试 user=${uname} ip=${ip}`);
   // 客户端侧 TCP keepalive（与上游侧成对，见 proxy.on('open')）：及时回收断网客户端留下的半开死连接
   try {
@@ -2106,7 +2241,7 @@ app.server.on('upgrade', (req: IncomingMessage, socket: Socket, head: Buffer) =>
   }
   const t0 = Date.now();
   socket.on('close', () => appendInstanceLog(inst.id, `[vnc] 连接关闭（持续 ${Math.round((Date.now() - t0) / 1000)}s）`));
-  proxy.ws(req, socket, head, { target: instanceTarget(inst) }, (err: any) => {
+  proxy.ws(req, socket, head, { target: parsed.weflow ? instanceTarget(inst).replace(":3000", ":3002") : instanceTarget(inst) }, (err: any) => {
     appendInstanceLog(inst.id, `[vnc] 连接失败：${err?.message || err}`);
   });
 });
@@ -2139,6 +2274,7 @@ for (const pub of listInstances()) {
 // 体检：和面板不在同一网络的实例（旧版探测失败时建到 bridge 的，#103）在面板日志里点名，只提示不动实例
 void checkInstanceNetworks(listInstances()).catch(() => {});
 watchInstanceNetwork();
+startNotificationWatcher(() => listInstances().map((x) => findInstance(x.id)).filter((x): x is Instance => !!x));
 
 // 启动时清一次旧版本 woc 镜像：面板自更新会留下旧的 woc-panel 镜像（helper 用新镜像重建面板后，
 // 旧镜像不再被任何容器引用，但带 tag 不是 dangling，清不掉）——在这里回收，也作为周期性兜底。

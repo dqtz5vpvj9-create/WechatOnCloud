@@ -29,6 +29,16 @@ description = "Allows the local tray preview to open a validated WeChat message 
 commands.allow = ["open_tray_message"]
 
 [[permission]]
+identifier = "allow-dismiss-tray-messages"
+description = "Allows the local tray preview to dismiss one or all unread reminders."
+commands.allow = ["dismiss_tray_message", "dismiss_all_tray_messages"]
+
+[[permission]]
+identifier = "allow-open-download-path"
+description = "Allows the desktop download toast to open a completed file or reveal it in Downloads."
+commands.allow = ["open_download_path"]
+
+[[permission]]
 identifier = "allow-show-tray-preview-for-test"
 description = "Exercises native tray preview layout only when launched with an automation port."
 commands.allow = ["show_tray_preview_for_test"]
