@@ -8,10 +8,10 @@ class NotificationSettingsTest(unittest.TestCase):
     def setUp(self):
         self.db = sqlite3.connect(':memory:')
         self.addCleanup(self.db.close)
-        self.db.execute('CREATE TABLE contact (username TEXT, chat_room_notify INTEGER, flag INTEGER, chat_room_type INTEGER)')
+        self.db.execute('CREATE TABLE contact (username TEXT, chat_room_notify INTEGER, flag INTEGER, chat_room_type INTEGER, verify_flag INTEGER DEFAULT 0)')
 
     def check_rows(self, rows, expected):
-        self.db.executemany('INSERT INTO contact VALUES (?,?,?,?)', rows)
+        self.db.executemany('INSERT INTO contact(username,chat_room_notify,flag,chat_room_type) VALUES (?,?,?,?)', rows)
         self.assertEqual(set(read_muted_sessions(self.db)), set(expected))
 
     def test_native_group_toggle_and_previous_regressions(self):
@@ -46,6 +46,11 @@ class NotificationSettingsTest(unittest.TestCase):
         self.db.execute('CREATE TABLE contact (username TEXT)')
         with self.assertRaisesRegex(RuntimeError, 'columns are missing'):
             read_muted_sessions(self.db)
+
+    def test_official_accounts_use_native_verification_flags_even_with_friend_style_ids(self):
+        for username, verify_flag in [('legacy-official', 24), ('wxid_official', 1048), ('subscription', 8), ('friend', 0)]:
+            self.db.execute('INSERT INTO contact(username,chat_room_notify,flag,verify_flag) VALUES (?,1,3,?)', (username, verify_flag))
+        self.assertEqual(set(read_muted_sessions(self.db)), {'legacy-official', 'wxid_official', 'subscription'})
 
 
 if __name__ == '__main__':

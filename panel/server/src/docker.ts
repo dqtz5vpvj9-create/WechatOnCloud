@@ -1720,7 +1720,7 @@ export async function weflowMutedSessions(inst: Instance): Promise<Set<string>> 
   const script = [
     'import json',
     "data=json.load(open('/config/weflow/data/muted-sessions.json'))",
-    "assert data.get('source') in ('wechat-native-v1:group.notify=0;direct.flag&0x200','wechat-native-v2:group.notify=0;direct.flag&0x200;system.brandsessionholder'), 'WeFlow notification settings bridge needs updating'",
+    "assert data.get('source') in ('wechat-native-v1:group.notify=0;direct.flag&0x200','wechat-native-v2:group.notify=0;direct.flag&0x200;system.brandsessionholder','wechat-native-v3:group.notify=0;direct.flag&0x200;official.verify_flag&0x8'), 'WeFlow notification settings bridge needs updating'",
     "muted=data.get('muted')",
     "assert isinstance(muted,list)",
     "print(json.dumps(muted))",
