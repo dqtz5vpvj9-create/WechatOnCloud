@@ -985,6 +985,8 @@ pub fn run() {
             .shadow(false)
             .focused(false)
             .focusable(false)
+            // Nonactivating macOS previews must deliver the first click to WKWebView.
+            .accept_first_mouse(true)
             .transparent(cfg!(target_os = "windows"))
             .visible(false)
             .build()?;
