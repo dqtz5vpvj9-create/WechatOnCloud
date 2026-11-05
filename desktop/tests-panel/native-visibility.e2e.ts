@@ -3,7 +3,7 @@ import { expect } from 'e2e';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 
-test('quick native hide/show retains its WebSocket, prolonged hiding releases it once', async ({ app, browser }) => {
+test('native hide/show retains its WebSocket even after the old idle timeout', async ({ app, browser }) => {
   let connections = 0;
   const sockets = new Set<any>();
   const server = createServer();
@@ -59,10 +59,16 @@ test('quick native hide/show retains its WebSocket, prolonged hiding releases it
     expect(await browser.evaluate(() => document.querySelector('iframe')!.contentWindow!.document === (window as any).originalFrame)).toBe(true);
     await visibility(false);
     await browser.evaluate(() => (window as any).expireBackground());
-    await expect.poll(() => browser.locator('iframe').getAttribute('src')).toBe('about:blank');
-    await expect.poll(() => sockets.size).toBe(0);
+    await expect.poll(() => browser.locator('iframe').getAttribute('src')).not.toBe('about:blank');
+    expect(sockets.size).toBe(1);
     await visibility(true);
-    await expect.poll(() => connections).toBe(2);
+    for (let i = 0; i < 10; i++) {
+      await visibility(false);
+      await browser.evaluate(() => (window as any).expireBackground());
+      await visibility(true);
+    }
+    expect(connections).toBe(1);
+    expect(await browser.evaluate(() => document.querySelector('iframe')!.contentWindow!.document === (window as any).originalFrame)).toBe(true);
     await expect.poll(() => sockets.size).toBe(1);
   } finally {
     for (const socket of sockets) socket.destroy();

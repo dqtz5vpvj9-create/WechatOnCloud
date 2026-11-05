@@ -571,30 +571,8 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
   const isAdmin = user?.role === 'admin';
 
   const [frameLoaded, setFrameLoaded] = useState(false);
-  const [nativeVisible, setNativeVisible] = useState(true);
-  useEffect(() => {
-    let release: ReturnType<typeof setTimeout> | undefined;
-    const onVisibility = (event: Event) => {
-      const visible = (event as CustomEvent<{ visible?: boolean }>).detail?.visible !== false;
-      if (visible) {
-        clearTimeout(release);
-        release = undefined;
-        setNativeVisible(true);
-      } else if (release === undefined) {
-        // A quick Alt/Option+W round trip should retain the live iframe/socket.
-        // Sustained background use still releases it for the idle watchdog.
-        release = setTimeout(() => {
-          setNativeVisible(false);
-          setFrameLoaded(false);
-        }, 60_000);
-      }
-    };
-    window.addEventListener('woc-native-visibility', onVisibility);
-    return () => {
-      clearTimeout(release);
-      window.removeEventListener('woc-native-visibility', onVisibility);
-    };
-  }, []);
+  // Native window visibility does not own the remote connection lifecycle.
+  // Alt/Option+W must retain the iframe/socket for any duration of hiding.
   // iframe 每载入一个新文档就 +1。iframe 会在页内自行换文档：实例短暂不可用时反代先回「自动重连」页，它 3s 后
   // location.reload() 进 noVNC（重启 / 升级 / 自愈 / 断线后的整页重连都可能碰上）。这时 frameLoaded 早已是 true，
   // setFrameLoaded(true) 不触发重渲染——所以凡是往 iframe 的 window / document 挂监听的 effect 都必须依赖 frameGen，
@@ -723,7 +701,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
   const [probing, setProbing] = useState(true);
   const offline = inst ? inst.runtime !== 'running' : false;
   const installed = !!inst && inst.wechat.installed && inst.wechat.phase !== 'downloading';
-  const showVnc = !!inst && !offline && installed && nativeVisible;
+  const showVnc = !!inst && !offline && installed;
   const { state: displayQuality } = useDisplayQuality();
   useEffect(() => {
     if (!showVnc || !frameLoaded) return;
@@ -1702,7 +1680,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
           <iframe
             ref={frameRef}
             className="iv-frame"
-            src={!nativeVisible || superseded ? 'about:blank' : desktopUrl(id)}
+            src={superseded ? 'about:blank' : desktopUrl(id)}
             title={`${appLabel} · 实例桌面`}
             allow="clipboard-read; clipboard-write; microphone; camera; autoplay"
             onLoad={() => {
