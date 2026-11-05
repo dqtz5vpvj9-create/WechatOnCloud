@@ -2,12 +2,16 @@ import { readdir, readFile, writeFile, copyFile, mkdir } from 'node:fs/promises'
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// GitHub rewrites non-ASCII asset names and strips a leading dot. Normalize
+// before upload so the manifest URLs match the actual published asset names.
+function assetName(name) { return name.replace(/[^\x00-\x7F]/g, '').replace(/^\.+/, ''); }
+
 export async function collect(source, destination) {
   await mkdir(destination, { recursive: true });
   for (const entry of await readdir(source, { withFileTypes: true })) {
     const file = path.join(source, entry.name);
     if (entry.isDirectory()) await collect(file, destination);
-    else if (/\.(exe|app\.tar\.gz|dmg)(\.sig)?$/.test(entry.name)) await copyFile(file, path.join(destination, entry.name));
+    else if (/\.(exe|app\.tar\.gz|dmg)(\.sig)?$/.test(entry.name)) await copyFile(file, path.join(destination, assetName(entry.name)));
   }
 }
 
@@ -17,14 +21,14 @@ export async function manifest(directory, version, repository) {
   const platforms = {};
   for (const [pattern, targets] of [
     [/\.exe$/, ['windows-x86_64']],
-    [/\.app\.tar\.gz$/, ['darwin-x86_64', 'darwin-aarch64']],
+    [/(?:^|\.)app\.tar\.gz$/, ['darwin-x86_64', 'darwin-aarch64']],
   ]) {
     const candidates = files.filter(file => pattern.test(file));
     if (candidates.length !== 1) throw new Error(`Expected exactly one installer for ${targets}`);
     const file = candidates[0];
     const signature = (await readFile(path.join(directory, `${file}.sig`), 'utf8')).trim();
     if (!signature || !Buffer.from(signature, 'base64').toString().includes('signature')) throw new Error('Invalid updater signature');
-    const url = `https://github.com/${repository}/releases/download/desktop-v${version}/${encodeURIComponent(file)}`;
+    const url = `https://github.com/${repository}/releases/download/desktop-v${version}/${encodeURIComponent(assetName(file))}`;
     for (const target of targets) platforms[target] = { signature, url };
   }
   return { version, notes: `云微 ${version}，支持应用内更新。`, pub_date: new Date().toISOString(), platforms };

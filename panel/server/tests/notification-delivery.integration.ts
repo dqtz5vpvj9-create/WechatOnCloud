@@ -11,7 +11,7 @@ test('poll and WeFlow stream both honor mute settings and open WeChat', async ()
   process.env.WOC_NOTIFICATION_POLL_MS = '1000';
   process.env.WOC_NOTIFICATION_IDLE_POLL_MS = '1000';
   const muted = new Set(['muted@chatroom', 'muted-direct']);
-  const ids = [...muted, 'allowed@chatroom', 'allowed-direct'];
+  const ids = [...muted, 'allowed@chatroom', 'allowed-direct', 'gh_official', 'legacy-official'];
   let timestamp = 1;
   let unreadOverride: number | undefined;
   let onPush: ((event: any) => void) | undefined;
@@ -23,7 +23,9 @@ test('poll and WeFlow stream both honor mute settings and open WeChat', async ()
       weflowMutedSessions: async () => new Set(muted),
       weflowApi: async (_inst: unknown, route: string) => route.startsWith('/api/v1/sessions')
         ? { sessions: ids.map(username => ({ username, lastTimestamp: timestamp, unreadCount: unreadOverride ?? timestamp })) }
-        : { messages: [{ createTime: timestamp, localId: timestamp, localType: 1, isSend: 0, content: 'fixture' }] },
+        : route.startsWith('/api/v1/contacts')
+          ? { contacts: [{ username: 'legacy-official', type: 'official' }, { username: 'allowed-direct', type: 'friend' }] }
+          : { messages: [{ createTime: timestamp, localId: timestamp, localType: 1, isSend: 0, content: 'fixture' }] },
       consumeWeFlowMessagePush: async (_inst: unknown, callback: (event: any) => void) => {
         onPush = callback;
         await new Promise(() => {});

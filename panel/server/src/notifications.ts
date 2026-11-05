@@ -53,7 +53,23 @@ const pushWatchers = new Set<string>();
 const pushReady = new Set<string>();
 const watcherInstances = new Map<string, Instance>();
 const weflowAvailability = new Map<string, { checkedAt: number; available: boolean }>();
+const officialAccounts = new Map<string, { checkedAt: number; official: boolean }>();
 let polling = false;
+
+async function isOfficialAccount(inst: Instance, id: string): Promise<boolean> {
+  if (id.endsWith('@chatroom')) return false;
+  if (id === 'brandsessionholder' || id.startsWith('gh_')) return true;
+  const key = `${inst.id}/${id}`;
+  const cached = officialAccounts.get(key);
+  if (cached && Date.now() - cached.checkedAt < 5 * 60_000) return cached.official;
+  const result = await weflowApi(inst, `/api/v1/contacts?keyword=${encodeURIComponent(id)}&limit=20`);
+  const contact = Array.isArray(result?.contacts)
+    ? result.contacts.find((item: any) => item.username === id) : undefined;
+  const official = contact?.type === 'official';
+  if (officialAccounts.size >= 5_000) officialAccounts.delete(officialAccounts.keys().next().value!);
+  officialAccounts.set(key, { checkedAt: Date.now(), official });
+  return official;
+}
 
 function unreadSnapshotFor(userId: string): SnapshotPayload {
   const user = findById(userId);
@@ -354,6 +370,13 @@ async function handleWeFlowPush(inst: Instance, event: any) {
     return;
   }
   if (mutedByInstance.get(inst.id)?.has(id)) return;
+  if (await isOfficialAccount(inst, id)) {
+    const blocked = mutedByInstance.get(inst.id) || new Set<string>();
+    blocked.add(id);
+    mutedByInstance.set(inst.id, blocked);
+    broadcastUnreadSnapshots();
+    return;
+  }
   const timestamp = Number(event.timestamp || 0);
   const state = cursors.get(inst.id);
   const current = state?.get(id);
@@ -397,7 +420,7 @@ function ensurePushWatcher(inst: Instance) {
             pushReady.add(inst.id);
             return;
           }
-          void handleWeFlowPush(inst, event);
+          void handleWeFlowPush(inst, event).catch(() => { /* Retry classification via the sessions poll. */ });
         });
       } catch { /* WeFlow restarts and disabled streams reconnect below. */ }
       pushReady.delete(inst.id);
@@ -413,15 +436,24 @@ function ensurePushWatcher(inst: Instance) {
 
 async function pollInstance(inst: Instance) {
   if ((await instanceRuntime(inst)) !== 'running') return;
-  const [result, mutedSessions] = await Promise.all([
+  const [result, nativeMuted] = await Promise.all([
     weflowApi(inst, '/api/v1/sessions?limit=500'),
     weflowMutedSessions(inst),
   ]);
+  const mutedSessions = new Set(nativeMuted);
+  const sessions = Array.isArray(result?.sessions) ? result.sessions : [];
+  const relevant = sessions.filter((session: any) => Number(session.unreadCount || 0) > 0
+    || (cursors.get(inst.id)?.get(String(session.username))?.attention || 0) > 0);
+  for (let offset = 0; offset < relevant.length; offset += 10) {
+    await Promise.all(relevant.slice(offset, offset + 10).map(async (session: any) => {
+      const id = String(session.username || '');
+      if (id && !mutedSessions.has(id) && await isOfficialAccount(inst, id)) mutedSessions.add(id);
+    }));
+  }
   const previousMuted = mutedByInstance.get(inst.id);
   const muteChanged = !previousMuted || previousMuted.size !== mutedSessions.size
     || [...mutedSessions].some(id => !previousMuted.has(id));
   mutedByInstance.set(inst.id, mutedSessions);
-  const sessions = Array.isArray(result?.sessions) ? result.sessions : [];
   const firstReconciliation = !reconciledInstances.has(inst.id);
   reconciledInstances.add(inst.id);
   let state = cursors.get(inst.id);
