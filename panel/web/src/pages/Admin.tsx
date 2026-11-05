@@ -4,6 +4,7 @@ import Cropper from 'react-easy-crop';
 import { api, APP_LABELS, appProfile, fmtUploadSize, provisionProgressText, type PanelUser, type InstanceWithStatus, type VolEntry, type AppType, type VersionInfo } from '../api';
 import { InstanceIcon, ICON_CHOICES } from '../AppIcon';
 import { InstanceMigration } from '../InstanceMigration';
+import { QualityToggle } from '../displayQuality';
 import { useUI, PasswordInput } from '../ui';
 import { useAuth } from '../auth';
 import { IcPlus, IcChevronRight, IcAlert, IcMonitor, IcUsers, IcCheck } from '../icons';
@@ -727,6 +728,8 @@ export default function Admin({ onOpenMenu, onChangePassword }: { onOpenMenu: ()
 
         {isAdmin && tab === 'system' && (
           <>
+            <h2 className="section-title">显示画质</h2>
+            <QualityToggle settings />
             {orphanConts.length > 0 && (
               <>
                 <div className="section-row">

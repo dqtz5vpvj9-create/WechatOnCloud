@@ -80,6 +80,8 @@ test('migration HTTP API requires admin and rejects invalid configuration before
       });
     };
     const route = '/api/admin/instances/1111111111/migration';
+    assert.equal((await request('GET', '/api/desktop-quality')).status, 401);
+    assert.equal((await request('POST', '/api/admin/desktop-quality', undefined, { quality: 'hd' })).status, 401);
     assert.equal((await request('GET', '/api/instances/1111111111/clipboard-image')).status, 401);
     for (const [method, path, body] of [
       ['GET', route, undefined], ['PUT', route, { enabled: false }], ['POST', route + '/check', undefined],
@@ -94,6 +96,7 @@ test('migration HTTP API requires admin and rejects invalid configuration before
       return cookie;
     };
     const subCookie = await login('test-sub');
+    assert.equal((await request('POST', '/api/admin/desktop-quality', subCookie, { quality: 'hd' })).status, 403);
     assert.equal((await request('GET', '/api/instances/2222222222/clipboard-image', subCookie)).status, 403);
     for (const [method, path, body] of [
       ['GET', route, undefined], ['PUT', route, { enabled: false }], ['POST', route + '/check', undefined],
@@ -101,6 +104,8 @@ test('migration HTTP API requires admin and rejects invalid configuration before
       assert.equal((await request(method, path, subCookie, body)).status, 403);
     }
     const adminCookie = await login('test-admin');
+    assert.equal((await request('POST', '/api/admin/desktop-quality', adminCookie, { quality: 'invalid' })).status, 400);
+    assert.equal((await request('GET', '/api/desktop-quality', subCookie)).status, 200);
     assert.equal((await request('GET', '/api/instances/missing/clipboard-image', adminCookie)).status, 403, 'instance access checks also reject nonexistent instances');
     assert.equal((await request('GET', '/api/admin/instances/missing/migration', adminCookie)).status, 404);
     assert.equal((await request('GET', '/api/admin/instances/2222222222/migration', adminCookie)).status, 400);

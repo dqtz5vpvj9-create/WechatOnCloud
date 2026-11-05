@@ -146,6 +146,8 @@ fi
 
 # 3) 启动 xsettingsd（让 GTK/Qt 应用实时响应字体/DPI 等 XSETTINGS 变更，无需重启）
 XSETTINGS_CONF="/config/.xsettingsd"
+WOC_XFT_DPI=98304
+[ "$(cat /config/.woc-display-quality 2>/dev/null)" = hd ] && WOC_XFT_DPI=196608
 if command -v xsettingsd >/dev/null 2>&1; then
     XSETTINGS_FONT="WenQuanYi Micro Hei"
     # 若用户保存了字体偏好，优先使用
@@ -162,7 +164,7 @@ Xft/Antialias 1
 Xft/Hinting 1
 Xft/HintStyle "hintslight"
 Xft/RGBA "rgb"
-Xft/DPI 98304
+Xft/DPI ${WOC_XFT_DPI}
 Gtk/FontName "${XSETTINGS_FONT} 10"
 EOF
     xsettingsd --config="${XSETTINGS_CONF}" 2>/dev/null &

@@ -36,6 +36,8 @@ import {
   instanceAppType,
   getDesktopDark,
   setDesktopDark,
+  getDesktopQuality,
+  setDesktopQuality,
   APP_TYPES,
   type AppType,
   type User,
@@ -121,6 +123,7 @@ import {
   instanceMigrationStatus,
   checkInstanceMigration,
   setWeFlowConsumer,
+  applyDisplayQuality,
 } from './docker.js';
 import { parseMigrationConfig, migrationErrorMessage, type MigrationConfig } from './migration.js';
 import { createSession, getSession, destroySession, destroyUserSessions, SESSION_TTL_MS } from './sessions.js';
@@ -481,6 +484,43 @@ app.post('/api/admin/desktop-theme', async (req, reply) => {
   setDesktopDark(dark);
   appendPanelLog('INFO', `实例深色设为 ${dark ? '深色' : '浅色'}（浏览器实例重启后生效）`);
   return { ok: true, dark };
+});
+
+let qualityJob: { phase: 'ready' | 'applying' | 'error'; error?: string } = { phase: 'ready' };
+app.get('/api/desktop-quality', async (req, reply) => {
+  if (!requireAuth(req, reply)) return;
+  return { quality: getDesktopQuality(), ...qualityJob };
+});
+app.post('/api/admin/desktop-quality', async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  const quality = (req.body as any)?.quality;
+  if (quality !== 'standard' && quality !== 'hd') return reply.code(400).send({ error: '画质只能是标准或高清' });
+  if (qualityJob.phase === 'applying') return reply.code(409).send({ error: '画质正在切换，请稍候' });
+  const previous = getDesktopQuality();
+  if (quality === previous) return { ok: true, quality, ...qualityJob };
+  qualityJob = { phase: 'applying' };
+  const instances = listInstances();
+  const apply = async (restart: boolean) => {
+    const results = await Promise.allSettled(instances.map(inst => applyDisplayQuality(inst, quality, restart)));
+    const failure = results.find(result => result.status === 'rejected');
+    if (failure?.status === 'rejected') throw failure.reason;
+  };
+  void (async () => {
+    try {
+      // Validate/apply the settings everywhere before restarting any application.
+      await apply(false);
+      await apply(true);
+      setDesktopQuality(quality);
+      qualityJob = { phase: 'ready' };
+      appendPanelLog('INFO', `全局画质已切换为 ${quality === 'hd' ? '高清' : '标准'}`);
+    } catch (error: any) {
+      const rollback = await Promise.allSettled(instances.map(inst => applyDisplayQuality(inst, previous, true)));
+      const detail = String(error?.message || error).trim().split('\n').at(-1)?.replace(/^\w*Error:\s*/, '');
+      qualityJob = { phase: 'error', error: `画质切换失败：${detail}` +
+        (rollback.some(result => result.status === 'rejected') ? '；部分实例回退失败，请检查实例状态' : '；已恢复原设置') };
+    }
+  })();
+  return { ok: true, quality: previous, ...qualityJob };
 });
 
 // ---------- 自助改密 ----------
@@ -2396,6 +2436,10 @@ if (WATCHDOG_ENABLED) {
 }
 
 await app.listen({ port: PORT, host: HOST });
+qualityJob = { phase: 'applying' };
+void Promise.all(listInstances().map(inst => applyDisplayQuality(inst, getDesktopQuality(), 'reconcile'))).then(() => {
+  qualityJob = { phase: 'ready' };
+}, (error: any) => { qualityJob = { phase: 'error', error: `显示设置恢复失败：${error?.message || error}` }; });
 console.log(`[panel] 监听 http://${HOST}:${PORT}  （多实例反代已就绪）· 版本 ${CURRENT_VERSION}`);
 appendPanelLog('INFO', `面板启动 · 版本 ${CURRENT_VERSION} · 监听 ${HOST}:${PORT}`);
 startUpdateChecker(); // 后台检测新版（best-effort，失败静默）

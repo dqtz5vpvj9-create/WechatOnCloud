@@ -8,7 +8,7 @@ import { randomBytes } from 'node:crypto';
 import { createConnection } from 'node:net';
 import Docker from 'dockerode';
 import { tarArchive, tarEntry, tarFileStream, tarSingleFile, openTarStream, scanArchive, sniffArchive } from './tar.js';
-import { instanceAppType, getDesktopDark, listInstances, setInstanceMigration, setInstanceMigrationState, type Instance } from './store.js';
+import { instanceAppType, getDesktopDark, getDesktopQuality, listInstances, setInstanceMigration, setInstanceMigrationState, type Instance } from './store.js';
 import {
   MIGRATION_CONTAINER_PORT,
   MigrationError,
@@ -3096,7 +3096,7 @@ async function applyXsettingsFont(inst: Instance, family: string): Promise<void>
     'Xft/Hinting 1',
     'Xft/HintStyle "hintslight"',
     'Xft/RGBA "rgb"',
-    'Xft/DPI 98304',
+    `Xft/DPI ${getDesktopQuality() === 'hd' ? 196608 : 98304}`,
     `Gtk/FontName "${family} 10"`,
   ];
   await execCapture(inst, ['sh', '-c', `printf '%s\\n' ${lines.map(l => `'${l}'`).join(' ')} > ${conf}`]);
@@ -3121,10 +3121,17 @@ export async function getFontFamily(inst: Instance, fontFile: string): Promise<s
 
 // 容器重建后从挂载卷恢复字体配置 & xsettingsd（不依赖 autostart 镜像版本）
 async function restoreFontFromVolume(inst: Instance): Promise<void> {
+  await applyDisplayQuality(inst, getDesktopQuality(), false).catch(() => {});
   await execCapture(inst, ['bash', '-c', 'if [ -f /config/.woc-fc-local.conf ]; then cp /config/.woc-fc-local.conf /etc/fonts/local.conf && fc-cache -f; fi'], 'root').catch(() => {});
   const famOut = await execCapture(inst, ['sh', '-c', 'cat /config/.woc-font-family 2>/dev/null || true']).catch(() => '');
   const family = famOut.trim();
   if (family) applyXsettingsFont(inst, family).catch(() => {});
+}
+
+export async function applyDisplayQuality(inst: Instance, quality: 'standard' | 'hd', restart: boolean | 'reconcile' = true): Promise<void> {
+  if (instanceAppType(inst) !== 'wechat' || await instanceRuntime(inst) !== 'running') return;
+  const script = readFileSync(new URL('./display-quality.py', import.meta.url), 'utf8');
+  await execCapture(inst, ['python3', '-c', script, quality, restart === 'reconcile' ? '2' : restart ? '1' : '0'], 'root');
 }
 
 // 实例容器名（供反代构造 target）。

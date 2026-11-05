@@ -9,6 +9,7 @@ import { IcShield, IcChevronRight } from './icons';
 import { GridName, StateWord, PenMark } from './parts';
 import { getThemeMode, applyThemeMode, nextThemeMode, resolveDark, type ThemeMode } from './theme';
 import { isDesktopApp, notifyTaskbar } from './desktopBridge';
+import { DisplayQualityProvider, QualityToggle } from './displayQuality';
 import InstanceView from './pages/Desktop';
 import Admin from './pages/Admin';
 
@@ -153,6 +154,7 @@ export default function AppShell() {
 
   return (
     <InstancesCtx.Provider value={state}>
+      <DisplayQualityProvider>
       <NotificationRuntime />
       <div className={'shell' + (railed ? ' collapsed' : '') + (drawer ? ' drawer-open' : '') + (singleInstance ? ' single-instance' : '')}>
         <Sidebar collapsed={railed} onToggleCollapsed={toggleCollapsed} singleInstance={singleInstance} />
@@ -167,6 +169,7 @@ export default function AppShell() {
         </main>
       </div>
       {showPw && <ChangePassword onClose={() => setShowPw(false)} onSaved={() => refresh()} />}
+      </DisplayQualityProvider>
     </InstancesCtx.Provider>
   );
 }
@@ -518,6 +521,7 @@ function HomeView({ onOpenMenu, onChangePassword }: { onOpenMenu: () => void; on
           {Icon.menu}
         </button>
         <span className="ws-title">主页</span>
+        <QualityToggle />
         <NotificationToggle />
         <ThemeToggle />
       </header>

@@ -4,6 +4,7 @@ import { api, appProfile, fmtUploadSize, provisionProgressText, VIEWER_ID, WEFLO
 import { browserImageCodec, fitPasteImage, pasteImageWithFallback } from '../pasteImage';
 import { copyImageToLocalClipboard } from '../copyImage';
 import { installSafariClipboard } from '../safariClipboard';
+import { connectDisplayQuality, QualityToggle, useDisplayQuality } from '../displayQuality';
 import { useUI } from '../ui';
 import { useAuth } from '../auth';
 import { NotificationToggle, ThemeToggle, useInstances } from '../AppShell';
@@ -709,6 +710,13 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
   const offline = inst ? inst.runtime !== 'running' : false;
   const installed = !!inst && inst.wechat.installed && inst.wechat.phase !== 'downloading';
   const showVnc = !!inst && !offline && installed && nativeVisible;
+  const { state: displayQuality } = useDisplayQuality();
+  useEffect(() => {
+    if (!showVnc || !frameLoaded) return;
+    const win = frameRef.current?.contentWindow;
+    if (!win) return;
+    try { return connectDisplayQuality(win, displayQuality.quality); } catch { return; }
+  }, [showVnc, frameLoaded, frameGen, displayQuality.quality]);
 
   // 切换实例时重置内嵌态
   useEffect(() => {
@@ -1504,6 +1512,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
           {MenuIcon}
         </button>
         <span className="ws-title">{WEFLOW_SCREEN ? "WeFlow" : title}</span>
+        <QualityToggle />
         <NotificationToggle />
         <ThemeToggle />
         {showVnc && (

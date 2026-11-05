@@ -322,6 +322,8 @@ export const api = {
 
   // 实例桌面深色（与面板主题统一的那个开关）：读取当前态 + 设置（管理员，实时切换运行中实例）。
   getDesktopTheme: () => req<{ dark: boolean }>('/api/desktop-theme'),
+  getDesktopQuality: () => req<{ quality: 'standard' | 'hd'; phase: string; error?: string }>('/api/desktop-quality'),
+  setDesktopQuality: (quality: 'standard' | 'hd') => req<{ quality: 'standard' | 'hd'; phase: string; error?: string }>('/api/admin/desktop-quality', { method: 'POST', body: JSON.stringify({ quality }) }),
   setDesktopTheme: (dark: boolean) =>
     req<{ ok: boolean; dark: boolean; applied: number; failed: number }>('/api/admin/desktop-theme', {
       method: 'POST',
