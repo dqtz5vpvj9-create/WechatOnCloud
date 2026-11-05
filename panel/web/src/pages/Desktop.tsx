@@ -7,7 +7,6 @@ import { installSafariClipboard } from '../safariClipboard';
 import { useUI } from '../ui';
 import { useAuth } from '../auth';
 import { NotificationToggle, ThemeToggle, useInstances } from '../AppShell';
-import { hasWeFlowDesktop, WeFlowIcon } from '../DesktopApps';
 import { IcFolder, IcKeyboard, IcClipboard, IcVolume, IcVolumeOff, IcMic, IcImage, IcRestart, IcUpload, IcDownload, IcClose, IcCheck } from '../icons';
 import { VncAudio } from '../vncAudio';
 import { RowMenu, type RowMenuItem } from '../parts';
@@ -1505,18 +1504,6 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
           {MenuIcon}
         </button>
         <span className="ws-title">{WEFLOW_SCREEN ? "WeFlow" : title}</span>
-        {id && hasWeFlowDesktop(id) && (
-          <a
-            className="ws-app-switch"
-            href={WEFLOW_SCREEN ? `/i/${id}` : `/i/${id}?screen=weflow`}
-            title={WEFLOW_SCREEN ? '切换到微信' : '切换到 WeFlow'}
-            aria-label={WEFLOW_SCREEN ? '切换到微信' : '切换到 WeFlow'}
-          >
-            {WEFLOW_SCREEN ? (
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M21 11a8 8 0 0 1-8 8H8l-5 3 1.5-5A8 8 0 1 1 21 11Z" /><path d="M8 10h.01M15 10h.01" /></svg>
-            ) : <WeFlowIcon />}
-          </a>
-        )}
         <NotificationToggle />
         <ThemeToggle />
         {showVnc && (

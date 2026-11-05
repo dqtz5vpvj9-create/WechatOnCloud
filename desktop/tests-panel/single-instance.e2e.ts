@@ -31,7 +31,9 @@ test('single instance opens directly, exposes global controls and uses direct fi
   await expect.poll(() => browser.evaluate(() => location.pathname)).toBe(`/i/${id}`);
   await expect.poll(() => browser.locator('[aria-label="开启消息通知"]').isVisible()).toBe(true);
   await expect.poll(() => browser.locator('[aria-label^="主题："]').isVisible()).toBe(true);
-  await expect.poll(() => browser.locator('[aria-label="切换到 WeFlow"]').isVisible()).toBe(true);
+  await expect.poll(() => browser.locator('.sidebar [aria-label="打开 WeFlow"]').isVisible()).toBe(true);
+  await expect.poll(() => browser.locator('.sidebar [aria-label="打开微信"]').isVisible()).toBe(true);
+  expect(await browser.locator('.ws-head .ws-app-switch').count()).toBe(0);
   await expect.poll(() => browser.locator('.sidebar [title="主页"]').count()).toBe(0);
 
   await browser.evaluate(() => {
@@ -52,4 +54,10 @@ test('single instance opens directly, exposes global controls and uses direct fi
   const received = browser.locator('a[title="下载"]', { hasText: '报告.pdf' });
   await expect.poll(() => received.isVisible()).toBe(true);
   expect(await received.getAttribute('href')).toContain('received=2026-11%2F%E6%8A%A5%E5%91%8A.pdf');
+  await browser.locator('.sidebar [aria-label="打开 WeFlow"]').click();
+  await expect.poll(() => browser.evaluate(() => location.search)).toBe('?screen=weflow');
+  await expect.poll(() => browser.locator('.sidebar [aria-label="打开 WeFlow"]').getAttribute('aria-current')).toBe('page');
+  await browser.locator('.sidebar [aria-label="打开微信"]').click();
+  await expect.poll(() => browser.evaluate(() => location.search)).toBe('');
+  await expect.poll(() => browser.locator('.sidebar [aria-label="打开微信"]').getAttribute('aria-current')).toBe('page');
 });

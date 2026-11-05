@@ -211,14 +211,14 @@ function Sidebar({ collapsed, onToggleCollapsed, singleInstance }: { collapsed: 
       </nav>}
 
       {!singleInstance && !collapsed && <div className="sb-section">实例</div>}
-      {!singleInstance && <div className="sb-list">
+      <div className="sb-list">
         {instances.length === 0 && !collapsed && <div className="sb-empty">暂无可用实例</div>}
         {instances.map((inst) => {
           const on = loc.pathname === `/i/${inst.id}` && !WEFLOW_SCREEN;
           const st = statusOf(inst);
           return (
             <div key={inst.id} className="sb-instance-group">
-            <button className={'sb-item sb-inst' + (on ? ' on' : '')} onClick={() => go(`/i/${inst.id}`)} title={`${inst.name} · ${st.text}`}>
+            <button className={'sb-item sb-inst' + (on ? ' on' : '')} onClick={() => go(`/i/${inst.id}`)} title={`${inst.name} · ${st.text}`} aria-label={singleInstance ? '打开微信' : `打开 ${inst.name}`} aria-current={on ? 'page' : undefined}>
               <span className="sb-avatar">
                 <InstanceIcon icon={inst.icon} appType={inst.appType} size={34} radius={10} />
                 <span className={'sb-dot ' + st.cls} />
@@ -234,7 +234,7 @@ function Sidebar({ collapsed, onToggleCollapsed, singleInstance }: { collapsed: 
             </div>
           );
         })}
-      </div>}
+      </div>
 
       <div className="sb-footer">
         <button

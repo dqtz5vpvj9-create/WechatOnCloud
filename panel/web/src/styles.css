@@ -3554,8 +3554,3 @@ select.input {
     animation-iteration-count: infinite !important;
   }
 }
-.ws-app-switch {
-  width: 34px; height: 34px; flex: 0 0 34px; display: grid; place-items: center;
-  color: var(--text-2); border: 1px solid var(--line); border-radius: 9px; text-decoration: none;
-}
-.ws-app-switch:hover { color: var(--wx-green); background: var(--hover); }
