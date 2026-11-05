@@ -290,6 +290,13 @@ fn apply_desktop_notification(
             if let Some(preview) = app.get_webview_window(TRAY_PREVIEW_WINDOW) {
                 let _ = preview.hide();
             }
+        } else if let Some(preview) = app.get_webview_window(TRAY_PREVIEW_WINDOW) {
+            if preview.is_visible().unwrap_or(false) {
+                let rect = state.tray_rect.lock().ok().and_then(|rect| *rect);
+                if let Some(rect) = rect {
+                    show_tray_preview(&app, rect);
+                }
+            }
         }
         return Ok(());
     }
@@ -383,9 +390,12 @@ fn dismiss_all_tray_messages(window: WebviewWindow, state: State<'_, TaskbarStat
             dismissed.insert(message.tag.clone(), message.count);
         }
     }
-    let _ = window
-        .eval("window.dispatchEvent(new CustomEvent('woc-notification-read',{detail:{all:true}}))");
-    clear_taskbar_unread(&window.as_ref().window(), &state);
+    if let Some(main) = window.app_handle().get_webview_window(MAIN_WINDOW) {
+        let _ = main.eval(
+            "window.dispatchEvent(new CustomEvent('woc-notification-read',{detail:{all:true}}))",
+        );
+        clear_taskbar_unread(&main.as_ref().window(), &state);
+    }
 }
 
 #[tauri::command]
@@ -417,9 +427,11 @@ fn dismiss_tray_message(
     state.tray_blinking.store(count > 0, Ordering::Relaxed);
     update_tray_tooltip(&app, count);
     if let Ok(tag_json) = serde_json::to_string(&tag) {
-        let _ = window.eval(format!(
-            "window.dispatchEvent(new CustomEvent('woc-notification-read',{{detail:{{tag:{tag_json}}}}}))"
-        ));
+        if let Some(main) = app.get_webview_window(MAIN_WINDOW) {
+            let _ = main.eval(format!(
+                "window.dispatchEvent(new CustomEvent('woc-notification-read',{{detail:{{tag:{tag_json}}}}}))"
+            ));
+        }
     }
     if count == 0 {
         if let Some(preview) = app.get_webview_window(TRAY_PREVIEW_WINDOW) {

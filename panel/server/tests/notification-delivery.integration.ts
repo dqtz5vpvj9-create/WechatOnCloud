@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { mock } from 'node:test';
@@ -8,6 +8,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 test('poll and WeFlow stream both honor mute settings and open WeChat', async () => {
   const temp = mkdtempSync(join(tmpdir(), 'woc-notifications-'));
   process.env.PANEL_PUSH_DATA = join(temp, 'push.json');
+  writeFileSync(process.env.PANEL_PUSH_DATA, JSON.stringify({ subscriptions: [], cursors: [['test-instance', [['legacy-ghost', {
+    timestamp: 1, unread: 7, attention: 7, dismissedUnread: 0, idsAtTimestamp: [], idsSeeded: true, title: 'old official account',
+  }]]]] }));
   process.env.WOC_NOTIFICATION_POLL_MS = '1000';
   process.env.WOC_NOTIFICATION_IDLE_POLL_MS = '1000';
   const muted = new Set(['muted@chatroom', 'muted-direct']);
@@ -24,7 +27,7 @@ test('poll and WeFlow stream both honor mute settings and open WeChat', async ()
       weflowApi: async (_inst: unknown, route: string) => route.startsWith('/api/v1/sessions')
         ? { sessions: ids.map(username => ({ username, lastTimestamp: timestamp, unreadCount: unreadOverride ?? timestamp })) }
         : route.startsWith('/api/v1/contacts')
-          ? { contacts: [{ username: 'legacy-official', type: 'official' }, { username: 'allowed-direct', type: 'friend' }] }
+          ? { contacts: [{ username: 'legacy-official', type: 'official' }, { username: 'legacy-ghost', type: 'official' }, { username: 'allowed-direct', type: 'friend' }] }
           : { messages: [{ createTime: timestamp, localId: timestamp, localType: 1, isSend: 0, content: 'fixture' }] },
       consumeWeFlowMessagePush: async (_inst: unknown, callback: (event: any) => void) => {
         onPush = callback;
@@ -48,7 +51,7 @@ test('poll and WeFlow stream both honor mute settings and open WeChat', async ()
     notifications.startNotificationWatcher(() => [{ id: 'test-instance' } as any]);
     for (let i = 0; !onPush && i < 100; i++) await delay(10);
     assert.ok(onPush, 'stream connected after initial mute snapshot');
-    const snapshot = received.find(item => item.snapshot);
+    const snapshot = received.filter(item => item.snapshot).at(-1);
     assert.equal(snapshot?.count, 2);
     assert.equal(snapshot?.sessions?.length, 2);
     received.length = 0;

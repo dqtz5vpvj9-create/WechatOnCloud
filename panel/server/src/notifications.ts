@@ -444,6 +444,12 @@ async function pollInstance(inst: Instance) {
   const sessions = Array.isArray(result?.sessions) ? result.sessions : [];
   const relevant = sessions.filter((session: any) => Number(session.unreadCount || 0) > 0
     || (cursors.get(inst.id)?.get(String(session.username))?.attention || 0) > 0);
+  const presentIds = new Set(relevant.map((session: any) => String(session.username)));
+  for (const [id, cursor] of cursors.get(inst.id) || []) {
+    if ((cursor.unread > 0 || cursor.attention > 0) && !presentIds.has(id)) {
+      relevant.push({ username: id });
+    }
+  }
   for (let offset = 0; offset < relevant.length; offset += 10) {
     await Promise.all(relevant.slice(offset, offset + 10).map(async (session: any) => {
       const id = String(session.username || '');
