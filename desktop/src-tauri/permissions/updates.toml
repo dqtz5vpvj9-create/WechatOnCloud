@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-desktop-update"
+description = "Check and install signed desktop updates from the configured channel."
+commands.allow = ["desktop_update"]

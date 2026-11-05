@@ -15,6 +15,7 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
 
 mod downloads;
+mod updater;
 
 const MAIN_WINDOW: &str = "main";
 const TRAY_PREVIEW_WINDOW: &str = "tray-preview";
@@ -890,6 +891,7 @@ fn start_backend_recovery(app: AppHandle) {
 pub fn run() {
     let automation_enabled = configure_automation();
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build());
     let builder = if automation_enabled {
@@ -905,7 +907,9 @@ pub fn run() {
     let app = builder
         .manage(TaskbarState::default())
         .manage(downloads::Downloads::default())
+        .manage(updater::Updates::default())
         .invoke_handler(tauri::generate_handler![
+            updater::desktop_update,
             set_taskbar_unread,
             set_desktop_notification,
             set_desktop_default_route,
@@ -918,7 +922,7 @@ pub fn run() {
             get_desktop_runtime_state,
             open_download_path
         ])
-        .setup(|app| {
+        .setup(move |app| {
             let config = app
                 .config()
                 .app
@@ -928,6 +932,7 @@ pub fn run() {
                 .expect("main window config must exist");
             let main = WebviewWindowBuilder::from_config(app, config)?
                 .initialization_script(include_str!("download-status.js"))
+                .initialization_script(include_str!("update-status.js"))
                 .on_download(downloads::handle);
             #[cfg(target_os = "macos")]
             let main = main.initialization_script_for_all_frames(include_str!(
@@ -976,7 +981,8 @@ pub fn run() {
             let dismiss =
                 MenuItem::with_id(app, "dismiss", "忽略全部未读提醒", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &dismiss, &quit])?;
+            let updates = MenuItem::with_id(app, "updates", "检查更新…", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&open, &dismiss, &updates, &quit])?;
 
             let configured_icon = app
                 .default_window_icon()
@@ -993,6 +999,13 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => open_default_app(app),
+                    "updates" => {
+                        show_main_window(app);
+                        if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+                            let _ = window
+                                .eval("window.dispatchEvent(new Event('yunwei-check-updates'))");
+                        }
+                    }
                     "dismiss" => {
                         if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
                             dismiss_all_tray_messages(window, app.state::<TaskbarState>());
@@ -1052,6 +1065,9 @@ pub fn run() {
             start_tray_blinker(app.handle().clone(), tray_icon);
 
             start_backend_recovery(app.handle().clone());
+            if !automation_enabled {
+                updater::start(app.handle().clone());
+            }
 
             Ok(())
         })

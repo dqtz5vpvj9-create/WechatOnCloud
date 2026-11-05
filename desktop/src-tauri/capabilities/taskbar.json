@@ -7,6 +7,7 @@
     "urls": ["https://wechat.tail.lixinrui000.cn/*"]
   },
   "permissions": [
+    "allow-desktop-update",
     "allow-set-taskbar-unread",
     "allow-set-desktop-notification",
     "allow-set-desktop-default-route",

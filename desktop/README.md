@@ -15,7 +15,16 @@
 - 新消息在 Windows 任务栏或 macOS Dock 显示未读数字，托盘／菜单栏图标闪烁并发送系统通知
 - 微信免打扰会话由服务端过滤，不触发桌面提醒
 - 托盘悬浮窗使用真实头像和紧凑双行列表；按会话标识累计新消息，同名会话独立显示，超过五行可滚动
-- 窗口重新获得焦点后自动清除未读徽标
+- 已读和忽略状态由服务端同步到各设备，窗口聚焦保留其他会话未读
+- 启动和每六小时自动检查桌面更新；有新版时提示“更新并重启”，托盘菜单也可手动检查
+
+## 应用内更新（0.2.0 起）
+
+旧版需安装一次 0.2.0，此后可在应用内完成更新。Windows 推荐使用安装包安装，macOS 将应用放入可写的 Applications 目录后运行。更新检查从固定 `desktop-stable` Release 获取清单，安装包使用版本化 Release 链接，并由内置公钥验签。
+
+发布时同时修改 `src-tauri/Cargo.toml` 与 `src-tauri/tauri.conf.json` 版本，再推送 `desktop-vX.Y.Z` 标签。`desktop-release` 工作流构建 Windows x64 与 macOS Universal，两个平台的包及签名齐全后才更新通道。回滚应以更高版本号重发已知正常代码，保留旧版本的 Release 资产。
+
+签名私钥保存在仓库 Secret `TAURI_SIGNING_PRIVATE_KEY`，本机备份位于用户 `.tauri/yunwei-updater.key`。私钥禁止入库，丢失后已安装客户端无法信任新密钥生成的更新。此签名校验更新包来源；macOS 当前仍为 ad hoc 签名，未经过 Apple 公证，首次安装的系统放行仍需要用户操作。
 
 ## 自动化测试通道
 

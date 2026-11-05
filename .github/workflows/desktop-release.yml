@@ -1,0 +1,86 @@
+name: desktop-release
+on:
+  push:
+    tags: ['desktop-v*']
+permissions:
+  contents: read
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+          - os: macos-15
+            target: universal-apple-darwin
+            bundles: app,dmg
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: desktop
+        shell: bash
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'macos-15' && 'aarch64-apple-darwin,x86_64-apple-darwin' || 'x86_64-pc-windows-msvc' }}
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+      - run: npm ci
+      - name: Validate release version and native logic
+        run: |
+          node -e 'const c=require("./src-tauri/tauri.conf.json"); if(process.env.GITHUB_REF_NAME!==`desktop-v${c.version}`) throw Error("Tag/version mismatch")'
+          cargo fmt --manifest-path src-tauri/Cargo.toml --check
+          cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - name: Build signed updater packages
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: npm run build -- --ci --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+      - name: Collect installers and update signatures
+        run: node scripts/release-manifest.mjs collect src-tauri/target/${{ matrix.target }}/release/bundle artifacts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          path: desktop/artifacts/
+          if-no-files-found: error
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: installers
+          merge-multiple: true
+      - name: Validate complete channel and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#desktop-v}"
+          node desktop/scripts/release-manifest.mjs manifest installers "$version" "$GITHUB_REPOSITORY"
+          gh release create "$GITHUB_REF_NAME" installers/* --repo "$GITHUB_REPOSITORY" --title "云微 $version" --prerelease --notes 'Windows 和 macOS 桌面安装包。首次安装本版后，可在应用内更新。macOS 当前为临时签名，首次安装仍需系统放行。'
+          gh release view desktop-stable --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create desktop-stable --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title '云微桌面更新通道' --prerelease --notes '应用内更新使用的签名清单；安装包见带版本号的云微桌面 Release。'
+          gh release upload desktop-stable installers/latest.json --repo "$GITHUB_REPOSITORY" --clobber
