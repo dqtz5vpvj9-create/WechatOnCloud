@@ -46,9 +46,6 @@ test('IME candidate numbers stay local while committed text and deliberate digit
     }, { phase, key, code, data });
     // KasmVNC normally ignores keyCode 229 itself. First finish a word to
     // activate the panel queue, where the old implementation captures it.
-    // Ordinary digits still use the low-latency native path. A candidate key
-    // must stay local even when the HTTP queue is initially empty.
-    expect(await fire('keydown', '7', 55)).toBe(true);
     await fire('compositionstart');
     expect(await fire('keydown', '1', 49)).toBe(false);
     await fire('compositionend', '', 0, '你');
@@ -56,16 +53,23 @@ test('IME candidate numbers stay local while committed text and deliberate digit
     await fire('compositionstart');
     expect(await fire('keydown', '2', 229)).toBe(false);
     await fire('compositionend', '', 0, '好');
+    // A late candidate key must never become text, even if the event exposes
+    // an ordinary keyCode and compositionend has already run.
+    expect(await fire('keydown', '2', 50)).toBe(false);
     // The confirming event can arrive after compositionend in WebKit.
     expect(await fire('keydown', '3', 229)).toBe(false);
     expect(await fire('keydown', 'Enter', 229)).toBe(false);
     await fire('compositionstart');
     expect(await fire('keydown', '5', 53)).toBe(false);
     await fire('compositionend', '', 0, '呀');
-    expect(await fire('keydown', '4', 52)).toBe(true);
+    await browser.evaluate(() => (document.querySelector('iframe')!.contentDocument!.getElementById('noVNC_keyboardinput') as HTMLElement).focus());
+    await browser.keyboard.type('4');
     finishFirst();
     await expect.poll(() => typed).toEqual(['你', '好', '呀', '4']);
     expect(keys).toEqual([]);
-    expect(await browser.evaluate(() => (document.querySelector('iframe')!.contentWindow as any).forwarded)).toEqual(['7']);
+    expect(await browser.evaluate(() => (document.querySelector('iframe')!.contentWindow as any).forwarded)).toEqual([]);
+    // Also use trusted browser typing when no earlier word is pending.
+    await browser.keyboard.type('78');
+    await expect.poll(() => typed).toEqual(['你', '好', '呀', '4', '7', '8']);
   } finally { finishFirst(); }
 });

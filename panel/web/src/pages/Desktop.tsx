@@ -26,7 +26,7 @@ function desktopUrl(id: string) {
 // - compositionend（中文提交）→ 经 xclip+xdotool 转发（绕开 VNC keysym 容量上限）。
 // - 转发未完成期间（队列活跃），把后续可见字符 + 回车/退格也串进同一队列按序送出 →
 //   彻底消除"中文走异步、数字走 keysym 抢跑"导致的"你好123→23"丢字。
-// - 队列空闲时不干预：英文/数字仍走原生 keysym，零延迟。
+// - 数字依据 beforeinput 的实际文字提交转发，避免把选词按键当正文；英文保留原生 keysym。
 // 返回清理函数（切回转发模式 / 重连 / 卸载时移除监听）。
 function installSeamlessIme(
   win: Window,
@@ -87,7 +87,8 @@ function installSeamlessIme(
   };
 
   // 捕获阶段（iframe window 最外层）抢先拦截，赶在 noVNC 之前 → stopImmediatePropagation 阻止它发 keysym。
-  // 关键：队列活跃（有中文正在转发）时，只接管【数字】、空格和回车/退格——它们不参与拼音合成、且是原"混数字丢字"的祸首；
+  // 数字键只保留本机默认行为，由 beforeinput 判断是否实际输入了数字。
+  // 队列活跃（有中文正在转发）时，接管空格和回车/退格以保序；
   // 字母绝不接管，否则会把下一个词的拼音首字母（如"呀"的 y）当成字面字符抢走，造成"你好y呀"。字母交给输入法合成。
   const onKeyDownCapture = (ev: Event) => {
     const e = ev as KeyboardEvent;
@@ -99,13 +100,15 @@ function installSeamlessIme(
       return;
     }
     if (e.ctrlKey || e.altKey || e.metaKey) return; // 快捷键放行
-    if (!active()) return; // 没有中文在转发 → 不接管（英文/数字走原生 keysym，零延迟）
     if (/^[0-9]$/.test(e.key)) {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      queue.push({ kind: 'text', data: e.key });
-      drain();
-    } else if (e.key === ' ' && e.keyCode !== 229 && !e.shiftKey) {
+      // A candidate key may arrive after compositionend with ordinary flags.
+      // Never infer inserted text from it. Stopping JS propagation keeps Kasm
+      // from sending a keysym while the native IME/default insertion proceeds.
+      if (e.target === doc.getElementById('noVNC_keyboardinput')) e.stopImmediatePropagation();
+      return;
+    }
+    if (!active()) return;
+    if (e.key === ' ' && e.keyCode !== 229 && !e.shiftKey) {
       // 拼音上屏后紧接着按空格（issue #155「连点空格，空格出现在文字之前」）：上屏那一下空格在合成中、已放行，
       // 下一下不在合成中，KasmVNC 只把 keyCode 229 和数字键当输入法交互，空格会立刻按 keysym 直发、抢在还在走
       // HTTP 转发的中文前面。229 = 输入法自己处理了这个键（如全角空格），成品走 beforeinput，那边会按序接管。
@@ -130,14 +133,14 @@ function installSeamlessIme(
   // 不经合成、直接插进输入框的文字：不少输入法的全角标点（，。？）、系统表情面板、语音输入都这样进来。
   // noVNC 对它们走「输入框差分 → 逐字 keysym」：非 ASCII 字符要临时映射键码，实测会丢；keysym 又经 websocket 直达，
   // 会抢在走 HTTP 转发的中文前面（实测依次输入「你好」「，」「世界」「。」，远端收到「。你好世界」）。
-  // 在插入前截下，与中文走同一个有序队列。ASCII 只在队列忙时接管（保证顺序），空闲时照旧走 keysym，零延迟。
+  // 在插入前截下，与中文走同一个有序队列。数字始终按实际提交处理，其余 ASCII 在队列忙时接管。
   const onBeforeInput = (ev: Event) => {
     const e = ev as InputEvent;
     if (e.isComposing || composing) return; // 合成中的文字在 compositionend 统一转发
     if (e.inputType !== 'insertText' && e.inputType !== 'insertReplacementText') return;
     if (e.target !== doc.getElementById('noVNC_keyboardinput')) return;
     const data = e.data ?? e.dataTransfer?.getData('text/plain') ?? '';
-    if (!data || (/^[\x20-\x7e]*$/.test(data) && !active())) return;
+    if (!data || (/^[\x20-\x7e]*$/.test(data) && !/^[0-9]+$/.test(data) && !active())) return;
     e.preventDefault(); // 不插入输入框：noVNC 不会再按 keysym 发一遍，它的差分基准也保持一致
     pushText(data);
     drain();
