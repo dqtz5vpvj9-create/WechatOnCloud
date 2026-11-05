@@ -573,13 +573,27 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
   const [frameLoaded, setFrameLoaded] = useState(false);
   const [nativeVisible, setNativeVisible] = useState(true);
   useEffect(() => {
+    let release: ReturnType<typeof setTimeout> | undefined;
     const onVisibility = (event: Event) => {
       const visible = (event as CustomEvent<{ visible?: boolean }>).detail?.visible !== false;
-      setNativeVisible(visible);
-      if (!visible) setFrameLoaded(false);
+      if (visible) {
+        clearTimeout(release);
+        release = undefined;
+        setNativeVisible(true);
+      } else if (release === undefined) {
+        // A quick Alt/Option+W round trip should retain the live iframe/socket.
+        // Sustained background use still releases it for the idle watchdog.
+        release = setTimeout(() => {
+          setNativeVisible(false);
+          setFrameLoaded(false);
+        }, 60_000);
+      }
     };
     window.addEventListener('woc-native-visibility', onVisibility);
-    return () => window.removeEventListener('woc-native-visibility', onVisibility);
+    return () => {
+      clearTimeout(release);
+      window.removeEventListener('woc-native-visibility', onVisibility);
+    };
   }, []);
   // iframe 每载入一个新文档就 +1。iframe 会在页内自行换文档：实例短暂不可用时反代先回「自动重连」页，它 3s 后
   // location.reload() 进 noVNC（重启 / 升级 / 自愈 / 断线后的整页重连都可能碰上）。这时 frameLoaded 早已是 true，

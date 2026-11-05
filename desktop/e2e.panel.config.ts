@@ -13,7 +13,7 @@ export default {
     engine: web({ browser }),
     app: {
       url: `http://127.0.0.1:${19448 + index}/`, environment: 'test',
-      permissions: browser === 'chromium' ? { 'clipboard-read': 'grant', 'clipboard-write': 'grant' } : { 'clipboard-read': 'grant' },
+      permissions: browser === 'chromium' ? { 'clipboard-read': 'grant', 'clipboard-write': 'grant', 'local-network-access': 'grant' } : { 'clipboard-read': 'grant' },
       command: {
         executable: process.execPath,
         args: ['node_modules/vite/bin/vite.js', ...(process.env.WOC_PANEL_PREVIEW ? ['preview'] : []), '--host', '127.0.0.1', '--port', String(19448 + index), '--strictPort'],
