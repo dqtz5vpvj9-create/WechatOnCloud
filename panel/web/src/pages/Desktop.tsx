@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useNavigate, useParams, type NavigateOptions } from 'react-router-dom';
-import { api, appProfile, fmtUploadSize, provisionProgressText, VIEWER_ID, WEFLOW_SCREEN, type Superseded } from '../api';
+import { api, appProfile, fmtUploadSize, provisionProgressText, reclaimViewer, VIEWER_ID, WEFLOW_SCREEN, type Superseded } from '../api';
 import { browserImageCodec, fitPasteImage, pasteImageWithFallback } from '../pasteImage';
 import { copyImageToLocalClipboard } from '../copyImage';
 import { installSafariClipboard } from '../safariClipboard';
@@ -689,6 +689,47 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
   const fontInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
+  useEffect(() => {
+    if (!id || !('__TAURI__' in window)) return;
+    let last = 0;
+    const logWindowState = (event: Event) => {
+      if (Date.now() - last < 500) return;
+      last = Date.now();
+      let framePath = 'unavailable';
+      let state = '';
+      try {
+        const doc = frameRef.current?.contentDocument;
+        framePath = doc?.location.pathname || 'empty';
+        state = doc?.documentElement.className || '';
+      } catch { /* Cross-origin authentication can temporarily replace the frame. */ }
+      void api.clientLog(id, `[window] ${event.type} visible=${document.visibilityState} focus=${document.hasFocus()} viewer=${VIEWER_ID.slice(0, 8)} frame=${framePath} state=${state.slice(0, 120)}`);
+    };
+    window.addEventListener('focus', logWindowState);
+    window.addEventListener('blur', logWindowState);
+    window.addEventListener('pageshow', logWindowState);
+    document.addEventListener('visibilitychange', logWindowState);
+    return () => {
+      window.removeEventListener('focus', logWindowState);
+      window.removeEventListener('blur', logWindowState);
+      window.removeEventListener('pageshow', logWindowState);
+      document.removeEventListener('visibilitychange', logWindowState);
+    };
+  }, [id]);
+  useEffect(() => {
+    let attempts = 0;
+    const onNestedPanel = (event: MessageEvent) => {
+      const frame = frameRef.current;
+      if (!id || !frame || event.source !== frame.contentWindow || event.origin !== window.location.origin
+          || event.data?.action !== 'woc-panel-in-desktop') return;
+      void api.clientLog(id, `阻止面板嵌入桌面（path=${String(event.data.path || '').slice(0, 160)}）`);
+      if (event.data.path === '/login') { window.location.assign('/login'); return; }
+      setFrameLoaded(false);
+      if (++attempts > 2) { setLoadStuck(true); return; }
+      frame.contentWindow?.location.replace(desktopUrl(id));
+    };
+    window.addEventListener('message', onNestedPanel);
+    return () => window.removeEventListener('message', onNestedPanel);
+  }, [id]);
   const dragDepth = useRef(0);
   const lastBeat = useRef(0);
   const audioRef = useRef<VncAudio | null>(null);
@@ -1696,7 +1737,15 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
               setFrameLoaded(true);
               setFrameGen((g) => g + 1); // iframe 页内换文档时也要重挂监听（见 frameGen 定义处）
               if (superseded) return;
-              if (id) api.clientLog(id, 'iframe 已加载（noVNC 页面就绪，开始连 VNC）');
+              if (id) {
+                let path = 'unavailable';
+                let vnc = false;
+                try {
+                  path = frameRef.current?.contentDocument?.location.pathname || 'empty';
+                  vnc = !!frameRef.current?.contentDocument?.getElementById('noVNC_container');
+                } catch { /* Authentication may be cross-origin. */ }
+                void api.clientLog(id, `iframe 已加载 path=${path} vnc=${vnc} viewer=${VIEWER_ID.slice(0, 8)}`);
+              }
               setTimeout(() => {
                 focusFrame(); // 加载完把键盘焦点交给 VNC
                 injectVncStyle(); // 让原生控制条在深色背景下可见
@@ -1769,7 +1818,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
                 </div>
                 <button
                   className="btn btn-primary iv-notice-btn"
-                  onClick={() => window.location.reload()}
+                  onClick={reclaimViewer}
                   title="整页重载、在这里重新连接（另一处会被切到这个提示）"
                 >
                   在这里继续使用

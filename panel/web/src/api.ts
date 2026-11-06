@@ -1,3 +1,5 @@
+import { NATIVE_VIEWER_KEY, viewerIdentity } from './viewerIdentity.ts';
+
 export interface PanelUser {
   id: string;
   username: string;
@@ -264,9 +266,15 @@ async function waitVolumeJob(id: string, job: string, onStage?: (stage: string) 
   }
 }
 
-// 本页面的「查看者」标识，每次整页加载生成一个。同一实例同一时间只在一处显示：面板据此认出被别处接管的页面，
+// 原生窗口跨导航保留查看者身份；普通网页仍按文档隔离，避免不同标签页共享身份互相重连。
+// 同一实例同一时间只在一处显示：面板据此认出被别处接管的页面，
 // 挡住它的自动重连和输入（见服务端「单连接」）。用 getRandomValues 而不是 randomUUID：后者只在 HTTPS 下有。
-export const VIEWER_ID = Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, '0')).join('');
+export const VIEWER_ID = viewerIdentity(typeof window !== 'undefined' && '__TAURI__' in window, (() => { try { return window.sessionStorage; } catch { return undefined; } })(),
+  () => Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, '0')).join(''));
+export function reclaimViewer() {
+  try { sessionStorage.removeItem(NATIVE_VIEWER_KEY); } catch { /* Session storage may be restricted. */ }
+  window.location.reload();
+}
 export const WEFLOW_SCREEN = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('screen') === 'weflow';
 const viewerHeader = { 'x-woc-viewer': VIEWER_ID, 'x-woc-screen': WEFLOW_SCREEN ? 'weflow' : 'wechat' };
 

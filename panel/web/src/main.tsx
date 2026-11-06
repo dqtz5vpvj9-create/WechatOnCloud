@@ -7,7 +7,7 @@ import './styles.css';
 // PWA 更新即时生效：vite-plugin-pwa 用 autoUpdate + skipWaiting + clientsClaim，新版本会立即接管，
 // 但当前页仍显示已加载的旧资源，需再刷一次才生效——这正是"改了却还看旧界面"的根源。这里监听 SW 接管，
 // 在"本来已有 SW 在控制"（即一次更新，而非首次安装）时自动重载一次，让更新一刷即生效。
-if ('serviceWorker' in navigator) {
+if (window.top === window && 'serviceWorker' in navigator) {
   const hadController = !!navigator.serviceWorker.controller;
   let reloaded = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
@@ -17,7 +17,11 @@ if ('serviceWorker' in navigator) {
   });
 }
 
-createRoot(document.getElementById('root')!).render(
+// A redirected/cached panel document inside the desktop must never mount a
+// second app, create a second viewer or claim the parent's desktop connection.
+if (window.top !== window) {
+  window.parent.postMessage({ action: 'woc-panel-in-desktop', path: window.location.pathname }, window.location.origin);
+} else createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <BrowserRouter>
       <App />
