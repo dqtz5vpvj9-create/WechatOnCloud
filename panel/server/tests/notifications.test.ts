@@ -4,14 +4,21 @@ import { isNotificationCandidate, selectNotificationCandidates, shouldInspectSam
 
 test('rejects outgoing messages', () => {
   assert.equal(isNotificationCandidate({ isSend: 1, localType: 1 }), false);
+  assert.equal(isNotificationCandidate({ isSend: true, localType: 1 }), false);
+  assert.equal(isNotificationCandidate({ isSend: '1', localType: 1 }), false);
+  assert.equal(isNotificationCandidate({ localType: 1 }), false);
+  assert.equal(isNotificationCandidate({ isSend: 0 }), false);
 });
 
 test('accepts incoming messages', () => {
   assert.equal(isNotificationCandidate({ isSend: 0, localType: 1 }), true);
+  assert.equal(isNotificationCandidate({ isSend: '0', localType: 1 }), true);
+  assert.equal(isNotificationCandidate({ isSend: false, localType: 1 }), true);
 });
 
 test('rejects system messages', () => {
   assert.equal(isNotificationCandidate({ isSend: 0, localType: 10000 }), false);
+  assert.equal(isNotificationCandidate({ isSend: 0, localType: 10002 }), false);
 });
 
 test('same-second messages in an open chat use message IDs instead of unread count', () => {

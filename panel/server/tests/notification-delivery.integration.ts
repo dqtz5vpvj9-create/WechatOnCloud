@@ -19,6 +19,7 @@ test('poll and WeFlow stream both honor mute settings and open WeChat', async ()
   let unreadOverride: number | undefined;
   let onPush: ((event: any) => void) | undefined;
   const received: any[] = [];
+  const streamMessages = new Map<string, any[]>();
   mock.module('../src/docker.js', {
     namedExports: {
       instanceRuntime: async () => 'running',
@@ -28,7 +29,9 @@ test('poll and WeFlow stream both honor mute settings and open WeChat', async ()
         ? { sessions: ids.map(username => ({ username, lastTimestamp: timestamp, unreadCount: unreadOverride ?? timestamp })) }
         : route.startsWith('/api/v1/contacts')
           ? { contacts: [{ username: 'legacy-official', type: 'official' }, { username: 'legacy-ghost', type: 'official' }, { username: 'allowed-direct', type: 'friend' }] }
-          : { messages: [{ createTime: timestamp, localId: timestamp, localType: 1, isSend: 0, content: 'fixture' }] },
+          : new URL(route, 'http://fixture').searchParams.has('start')
+            ? { messages: streamMessages.get(new URL(route, 'http://fixture').searchParams.get('talker')!) || [{ createTime: 2, serverId: `stream-${new URL(route, 'http://fixture').searchParams.get('talker')}`, localType: 1, isSend: 0 }] }
+            : { messages: [{ createTime: timestamp, localId: timestamp, localType: 1, isSend: 0, content: 'fixture' }] },
       consumeWeFlowMessagePush: async (_inst: unknown, callback: (event: any) => void) => {
         onPush = callback;
         await new Promise(() => {});
@@ -55,7 +58,10 @@ test('poll and WeFlow stream both honor mute settings and open WeChat', async ()
     assert.equal(snapshot?.count, 2);
     assert.equal(snapshot?.sessions?.length, 2);
     received.length = 0;
-    for (const sessionId of ids) onPush({ event: 'message.new', sessionId, timestamp: 2, content: 'fixture' });
+    onPush({ event: 'message.new', sessionId: 'allowed-direct', rawid: 'existing-at-startup', timestamp: 1 });
+    await delay(20);
+    assert.equal(received.filter(item => !item.snapshot).length, 0, 'a same-timestamp startup baseline never replays historical messages');
+    for (const sessionId of ids) onPush({ event: 'message.new', sessionId, rawid: `stream-${sessionId}`, timestamp: 2, content: 'fixture' });
     onPush({ event: 'message.new', sessionId: 'allowed-direct', timestamp: 2, content: 'outgoing', isSend: 1, localType: 1 });
     onPush({ event: 'message.new', sessionId: 'allowed-direct', timestamp: 2, content: 'system', isSend: 0, localType: 10000 });
     await delay(20);
@@ -63,6 +69,25 @@ test('poll and WeFlow stream both honor mute settings and open WeChat', async ()
       'wechat-test-instance-allowed-direct', 'wechat-test-instance-allowed@chatroom',
     ]);
     assert.ok(received.filter(item => !item.snapshot).every(item => item.url === '/i/test-instance'));
+    received.length = 0;
+    // The actual WeFlow payload omits isSend/localType. Resolve its raw ID
+    // against real message metadata before trusting it as an incoming message.
+    streamMessages.set('allowed-direct', [
+      { serverId: 'self-raw', createTime: 2, isSend: 1, localType: 1 },
+      { serverId: 'system-raw', createTime: 2, isSend: 0, localType: 10000 },
+    ]);
+    onPush({ event: 'message.new', sessionId: 'allowed-direct', rawid: 'self-raw', timestamp: 2 });
+    onPush({ event: 'message.new', sessionId: 'allowed-direct', rawid: 'system-raw', timestamp: 2 });
+    onPush({ event: 'message.new', sessionId: 'allowed-direct', rawid: 'missing-raw', timestamp: 2 });
+    onPush({ event: 'message.new', sessionId: 'allowed-direct', rawid: 'historical-raw', timestamp: 1 });
+    onPush({ event: 'message.new', sessionId: 'allowed@chatroom', rawid: 'stream-allowed@chatroom', timestamp: 2 });
+    onPush({ event: 'message.new', sessionId: 'allowed@chatroom', rawid: 'stream-allowed@chatroom', timestamp: 2 });
+    await delay(30);
+    assert.equal(received.filter(item => !item.snapshot).length, 0, 'outgoing, system, unresolved, historical and duplicate stream events never notify');
+    streamMessages.set('allowed@chatroom', [{ serverId: 'second-incoming', createTime: 2, isSend: 0, localType: 1 }]);
+    for (let i = 0; i < 2; i++) onPush({ event: 'message.new', sessionId: 'allowed@chatroom', rawid: 'second-incoming', timestamp: 2 });
+    await delay(30);
+    assert.equal(received.filter(item => !item.snapshot).length, 1, 'a distinct same-second incoming message notifies once even when concurrent stream copies arrive');
     notifications.markNotificationsRead({ id: 'test-user' } as any);
     assert.equal(received.filter(item => item.snapshot).at(-1)?.count, 0);
     assert.equal(secondDevice.filter(item => item.snapshot).at(-1)?.count, 0, 'dismiss synchronizes both devices');

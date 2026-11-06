@@ -108,8 +108,9 @@ function broadcastUnreadSnapshots() {
 }
 
 export function isNotificationCandidate(message: any) {
-  if (Number(message?.localType) === 10000) return false;
-  return !message?.isSend;
+  const type = Number(message?.localType);
+  if (!Number.isFinite(type) || type <= 0 || type === 10000 || type === 10002) return false;
+  return message?.isSend === false || message?.isSend === 0 || message?.isSend === '0';
 }
 
 export function markNotificationsRead(user: User, tag?: string) {
@@ -359,7 +360,7 @@ async function handleWeFlowPush(inst: Instance, event: any) {
   if (!id) return;
   const cursor = cursors.get(inst.id)?.get(id);
   if (Number(event?.localType) === 10000) return;
-  if (event?.isSend) {
+  if (event?.isSend === true || event?.isSend === 1 || event?.isSend === '1') {
     if (cursor && (cursor.attention || cursor.dismissedUnread !== cursor.unread)) {
       cursor.attention = 0;
       cursor.dismissedUnread = cursor.unread;
@@ -367,6 +368,15 @@ async function handleWeFlowPush(inst: Instance, event: any) {
     }
     return;
   }
+  const timestamp = Number(event.timestamp);
+  const rawid = String(event.rawid || '').trim();
+  if (!rawid || !Number.isFinite(timestamp) || timestamp <= 0) return;
+  const alreadyObserved = () => {
+    const current = cursors.get(inst.id)?.get(id);
+    return !!current && (timestamp < current.timestamp
+      || (timestamp === current.timestamp && (!current.idsSeeded || current.idsAtTimestamp.has(rawid))));
+  };
+  if (alreadyObserved()) return;
   if (mutedByInstance.get(inst.id)?.has(id)) return;
   if (await isOfficialAccount(inst, id)) {
     const blocked = mutedByInstance.get(inst.id) || new Set<string>();
@@ -375,13 +385,22 @@ async function handleWeFlowPush(inst: Instance, event: any) {
     broadcastUnreadSnapshots();
     return;
   }
-  const timestamp = Number(event.timestamp || 0);
+  // WeFlow's actual SSE payload omits isSend/localType. Verify the exact
+  // message rather than interpreting absent direction as an incoming message.
+  // Bound the query to that second; do not fetch media or inspect original DBs.
+  const result = await weflowApi(inst, `/api/v1/messages?talker=${encodeURIComponent(id)}&limit=100&start=${timestamp}&end=${timestamp}`);
+  const message = Array.isArray(result?.messages) ? result.messages.find((item: any) =>
+    String(item.serverIdRaw || item.serverId || '') === rawid && Number(item.createTime) === timestamp) : undefined;
+  if (!isNotificationCandidate(message)) return;
+  // Polling, read acknowledgments or another copy of this event may finish
+  // while the metadata/classification calls are pending.
+  if (alreadyObserved() || mutedByInstance.get(inst.id)?.has(id)) return;
   const state = cursors.get(inst.id);
   const current = state?.get(id);
   if (current && timestamp >= current.timestamp) {
     if (timestamp > current.timestamp) current.idsAtTimestamp.clear();
     current.timestamp = timestamp;
-    current.idsAtTimestamp.add(String(event.rawid || ''));
+    current.idsAtTimestamp.add(rawid);
     current.idsSeeded = true;
     current.attention = Math.min(999, current.attention + 1);
   }
