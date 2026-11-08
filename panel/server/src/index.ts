@@ -414,8 +414,8 @@ app.post('/api/notifications/read', async (req, reply) => {
   if (!all && (!tag.startsWith('wechat-') || tag.length > 512)) {
     return reply.code(400).send({ error: '通知标识无效' });
   }
-  markNotificationsRead(u, all ? undefined : tag);
-  return { ok: true };
+  const readSequence = markNotificationsRead(u, all ? undefined : tag);
+  return { ok: true, readSequence };
 });
 
 app.post('/api/notifications/subscribe', { bodyLimit: 16 * 1024 }, async (req, reply) => {

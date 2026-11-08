@@ -16,6 +16,7 @@ test('poll and WeFlow stream both honor mute settings and open WeChat', async ()
   const muted = new Set(['muted@chatroom', 'muted-direct']);
   const ids = [...muted, 'allowed@chatroom', 'allowed-direct', 'gh_official', 'legacy-official'];
   let timestamp = 1;
+  mock.method(Date, 'now', () => Math.max(2, timestamp) * 1000);
   let unreadOverride: number | undefined;
   let onPush: ((event: any) => void) | undefined;
   const received: any[] = [];
@@ -31,7 +32,7 @@ test('poll and WeFlow stream both honor mute settings and open WeChat', async ()
           ? { contacts: [{ username: 'legacy-official', type: 'official' }, { username: 'legacy-ghost', type: 'official' }, { username: 'allowed-direct', type: 'friend' }] }
           : new URL(route, 'http://fixture').searchParams.has('start')
             ? { messages: streamMessages.get(new URL(route, 'http://fixture').searchParams.get('talker')!) || [{ createTime: 2, serverId: `stream-${new URL(route, 'http://fixture').searchParams.get('talker')}`, localType: 1, isSend: 0 }] }
-            : { messages: [{ createTime: timestamp, localId: timestamp, localType: 1, isSend: 0, content: 'fixture' }] },
+            : { messages: [{ createTime: timestamp, localId: timestamp, serverId: timestamp === 2 ? `stream-${new URL(route, 'http://fixture').searchParams.get('talker')}` : undefined, localType: 1, isSend: 0, content: 'fixture' }] },
       consumeWeFlowMessagePush: async (_inst: unknown, callback: (event: any) => void) => {
         onPush = callback;
         await new Promise(() => {});
@@ -93,6 +94,19 @@ test('poll and WeFlow stream both honor mute settings and open WeChat', async ()
     assert.equal(secondDevice.filter(item => item.snapshot).at(-1)?.count, 0, 'dismiss synchronizes both devices');
     const stored = JSON.parse(readFileSync(process.env.PANEL_PUSH_DATA!, 'utf8'));
     assert.ok(stored.cursors[0][1].some(([, cursor]: any) => cursor.dismissedUnread === 1 && cursor.attention === 0));
+    streamMessages.set('allowed-direct', [{ serverId: 'late-after-read', createTime: 2, isSend: 0, localType: 1 }]);
+    received.length = 0;
+    onPush({ event: 'message.new', sessionId: 'allowed-direct', rawid: 'late-after-read', timestamp: 2 });
+    await delay(20);
+    assert.equal(received.filter(item => !item.snapshot).length, 0, 'database-delayed messages created before acknowledgment cannot relight the tray');
+    received.length = 0;
+    secondDevice.length = 0;
+    timestamp = 2;
+    unreadOverride = 5; // Delayed native unread counts for already acknowledged messages.
+    for (let i = 0; !received.some(item => item.snapshot) && i < 200; i++) await delay(10);
+    assert.equal(received.filter(item => item.snapshot).at(-1)?.count, 0, 'late unread counts cannot resurrect acknowledged notifications');
+    assert.equal(secondDevice.filter(item => item.snapshot).at(-1)?.count, 0, 'acknowledgment remains effective on another device');
+    unreadOverride = undefined;
     received.length = 0;
     timestamp = 3;
     for (let i = 0; received.filter(item => !item.snapshot).length < 2 && i < 200; i++) await delay(10);

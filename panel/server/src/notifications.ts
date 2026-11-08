@@ -11,6 +11,8 @@ interface StoredSubscription {
   updatedAt: string;
 }
 interface PushData {
+  notificationSequence?: number;
+  acknowledgedThrough?: Record<string, number>;
   vapid?: { publicKey: string; privateKey: string };
   subscriptions: StoredSubscription[];
   cursors?: Array<[string, Array<[string, Omit<Cursor, 'idsAtTimestamp'> & { idsAtTimestamp: string[] }]>]>;
@@ -24,6 +26,8 @@ interface Cursor {
   avatarUrl?: string;
   attention: number;
   dismissedUnread: number;
+  acknowledged?: boolean;
+  acknowledgedAt?: number;
 }
 
 interface SnapshotPayload {
@@ -55,6 +59,11 @@ const watcherInstances = new Map<string, Instance>();
 const weflowAvailability = new Map<string, { checkedAt: number; available: boolean }>();
 const officialAccounts = new Map<string, { checkedAt: number; official: boolean }>();
 let polling = false;
+let watchedInstances: () => Instance[] = () => [];
+
+function acknowledgedThrough(instanceId: string, cursor?: Cursor) {
+  return Math.max(load().acknowledgedThrough?.[instanceId] || 0, cursor?.acknowledgedAt || 0);
+}
 
 async function isOfficialAccount(inst: Instance, id: string): Promise<boolean> {
   if (id.endsWith('@chatroom')) return false;
@@ -81,7 +90,10 @@ export function unreadSnapshotFor(userId: string): SnapshotPayload {
     if (!userCanAccess(user, instanceId)) continue;
     for (const [sessionId, cursor] of sessionCursors) {
       if (mutedByInstance.get(instanceId)?.has(sessionId)) continue;
-      const unread = Math.max(0, cursor.unread - cursor.dismissedUnread, cursor.attention);
+      // Once explicitly acknowledged, only newly observed incoming messages
+      // can light the tray again. Delayed native unread counts are not new events.
+      const unread = cursor.acknowledged ? Math.max(0, cursor.attention)
+        : Math.max(0, cursor.unread - cursor.dismissedUnread, cursor.attention);
       count += unread;
       if (!unread) continue;
       sessions.push({
@@ -114,10 +126,19 @@ export function isNotificationCandidate(message: any) {
 }
 
 export function markNotificationsRead(user: User, tag?: string) {
+  const now = Math.floor(Date.now() / 1000);
+  if (!tag) {
+    const through = load().acknowledgedThrough ||= {};
+    for (const id of new Set([...cursors.keys(), ...watchedInstances().map(inst => inst.id)])) {
+      if (userCanAccess(user, id)) through[id] = Math.max(through[id] || 0, now);
+    }
+  }
   for (const [instanceId, sessionCursors] of cursors) {
     if (!userCanAccess(user, instanceId)) continue;
     for (const [sessionId, cursor] of sessionCursors) {
       if (tag && tag !== `wechat-${instanceId}-${sessionId}`) continue;
+      cursor.acknowledged = true;
+      cursor.acknowledgedAt = Math.max(cursor.acknowledgedAt || 0, now);
       if (cursor.attention > 0) {
         cursor.attention = 0;
       }
@@ -128,6 +149,7 @@ export function markNotificationsRead(user: User, tag?: string) {
   }
   // Repeated acknowledgments also repair clients holding a stale tray state.
   broadcastUnreadSnapshots();
+  return load().notificationSequence || 0;
 }
 
 export function selectNotificationCandidates(
@@ -297,6 +319,7 @@ export async function sendTestPush(user: User) {
   const live = [...(liveSubscribers.get(user.id) || [])];
   if (!records.length && !live.length) throw new Error('当前设备尚未连接通知服务');
   const payload = {
+    sequence: nextNotificationSequence(),
     title: '云微通知已开启',
     body: 'WeFlow 新消息会通过这里提醒你。',
     count: 1,
@@ -321,7 +344,15 @@ function preview(message: any): string {
   return text.length > 120 ? `${text.slice(0, 120)}…` : text;
 }
 
+function nextNotificationSequence() {
+  const data = load();
+  data.notificationSequence = (data.notificationSequence || 0) + 1;
+  persist();
+  return data.notificationSequence;
+}
+
 async function deliverToUsers(inst: Instance, payload: object) {
+  payload = { ...payload, sequence: nextNotificationSequence() };
   const records = load().subscriptions.filter((s) => {
     const user = findById(s.userId);
     return !!user && !user.disabled && userCanAccess(user, inst.id);
@@ -373,8 +404,8 @@ async function handleWeFlowPush(inst: Instance, event: any) {
   if (!rawid || !Number.isFinite(timestamp) || timestamp <= 0) return;
   const alreadyObserved = () => {
     const current = cursors.get(inst.id)?.get(id);
-    return !!current && (timestamp < current.timestamp
-      || (timestamp === current.timestamp && (!current.idsSeeded || current.idsAtTimestamp.has(rawid))));
+    return timestamp <= acknowledgedThrough(inst.id, current) || (!!current && (timestamp < current.timestamp
+      || (timestamp === current.timestamp && (!current.idsSeeded || current.idsAtTimestamp.has(rawid)))));
   };
   if (alreadyObserved()) return;
   if (mutedByInstance.get(inst.id)?.has(id)) return;
@@ -486,6 +517,7 @@ async function pollInstance(inst: Instance) {
       title: String(s.displayName || ''), avatarUrl: typeof s.avatarUrl === 'string' ? s.avatarUrl : undefined,
       attention: 0,
       dismissedUnread: 0,
+      acknowledged: Number(s.lastTimestamp || 0) <= acknowledgedThrough(inst.id),
     }]));
     cursors.set(inst.id, state);
     await seedCurrentMessageIds(inst, sessions, state);
@@ -504,6 +536,7 @@ async function pollInstance(inst: Instance) {
         timestamp, unread, idsAtTimestamp: new Set(), idsSeeded: false,
         title: String(session.displayName || ''), avatarUrl: typeof session.avatarUrl === 'string' ? session.avatarUrl : undefined,
         attention: 0, dismissedUnread: 0,
+        acknowledged: timestamp <= acknowledgedThrough(inst.id),
       });
       unreadChanged ||= unread > 0;
       continue;
@@ -528,7 +561,7 @@ async function pollInstance(inst: Instance) {
     const messagesResult = await weflowApi(inst, `/api/v1/messages?talker=${encodeURIComponent(id)}&limit=50`);
     const messages = Array.isArray(messagesResult?.messages) ? messagesResult.messages : [];
     const candidates = messages
-      .filter((m: any) => isNotificationCandidate(m) && (
+      .filter((m: any) => isNotificationCandidate(m) && Number(m.createTime || 0) > acknowledgedThrough(inst.id, old) && (
         Number(m.createTime || 0) > old.timestamp ||
         (Number(m.createTime || 0) === old.timestamp && !old.idsAtTimestamp.has(String(m.serverId || m.localId)))
       ))
@@ -559,6 +592,8 @@ async function pollInstance(inst: Instance) {
       avatarUrl: typeof session.avatarUrl === 'string' ? session.avatarUrl : old.avatarUrl,
       attention: old.attention,
       dismissedUnread: old.dismissedUnread,
+      acknowledged: old.acknowledged,
+      acknowledgedAt: old.acknowledgedAt,
     });
     if (incoming.length && !mutedSessions.has(id)) {
       const cursor = state.get(id)!;
@@ -571,6 +606,7 @@ async function pollInstance(inst: Instance) {
 }
 
 export function startNotificationWatcher(instances: () => Instance[]) {
+  watchedInstances = instances;
   load();
   const tick = async () => {
     if (polling || (!load().subscriptions.length && !liveSubscribers.size)) return;

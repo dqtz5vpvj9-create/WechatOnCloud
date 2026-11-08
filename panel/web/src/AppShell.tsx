@@ -8,7 +8,7 @@ import { InstanceIcon } from './AppIcon';
 import { IcShield, IcChevronRight } from './icons';
 import { GridName, StateWord, PenMark } from './parts';
 import { getThemeMode, applyThemeMode, nextThemeMode, resolveDark, type ThemeMode } from './theme';
-import { isDesktopApp, notifyTaskbar } from './desktopBridge';
+import { installTaskbarUnreadReset, isDesktopApp, notifyTaskbar } from './desktopBridge';
 import { DisplayQualityProvider, QualityToggle } from './displayQuality';
 import InstanceView from './pages/Desktop';
 import Admin from './pages/Admin';
@@ -413,6 +413,7 @@ function NotificationRuntime() {
     const desktop = isDesktopApp();
     const browserNotifications = localStorage.getItem(LIVE_NOTIFICATION_KEY) === '1' && Notification.permission === 'granted';
     if (!desktop && !browserNotifications) return;
+    const reset = desktop ? installTaskbarUnreadReset(() => api.markNotificationsRead()) : () => {};
     if (desktop) startLiveNotifications();
     if (browserNotifications) void navigator.serviceWorker.ready.then(startLiveNotifications);
     const markRead = (event: Event) => {
@@ -422,6 +423,7 @@ function NotificationRuntime() {
     window.addEventListener('woc-notification-read', markRead);
     return () => {
       window.removeEventListener('woc-notification-read', markRead);
+      reset();
       stopLiveNotifications(true);
     };
   }, []);

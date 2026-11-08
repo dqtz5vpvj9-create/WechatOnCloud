@@ -351,7 +351,7 @@ export const api = {
       body: JSON.stringify({ endpoint }),
     }),
   testNotification: () => req<{ ok: boolean }>('/api/notifications/test', { method: 'POST' }),
-  markNotificationsRead: (tag?: string) => req<{ ok: boolean }>('/api/notifications/read', {
+  markNotificationsRead: (tag?: string) => req<{ ok: boolean; readSequence: number }>('/api/notifications/read', {
     method: 'POST', body: JSON.stringify(tag ? { tag } : { all: true }),
   }),
 
