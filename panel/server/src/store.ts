@@ -2,6 +2,7 @@ import { chmodSync, readFileSync, writeFileSync, existsSync, mkdirSync, renameSy
 import { dirname } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
+import type { HistoryMediaStorage } from './history-media.js';
 import {
   assertMigrationPortUnreserved,
   parseMigrationConfig,
@@ -68,6 +69,9 @@ export interface Instance {
   migration?: MigrationConfig;
   // 每实例最多保留一次应用状态，错误限长；不新增任务/日志文件。
   migrationState?: MigrationApplyState;
+  // Offline history import may place large media on separate host disks.
+  // Preserve these declarations when the container is rebuilt.
+  historyMedia?: HistoryMediaStorage;
   // 容器还没建成功时的原因（#129）：创建/重试创建失败时写入，建成后清除。有值时面板启动不再自动重试
   // （重试多半又要拉镜像，会把面板开始监听拖上好几分钟），卡片显示「创建失败」等管理员点重试。
   // 创建开始时先写一个「未完成」占位：面板在创建途中重启时，重启后能看出这次创建没完成，而不是一个无解释的「未创建」。

@@ -59,6 +59,8 @@ Docker 官方文档明确指出：默认 Linux bridge 禁止远端直接访问�
 
 现有数据卷备份/恢复适合备份整个 Linux 实例。它不承诺把 Windows/macOS 的微信目录直接覆盖到 Linux 后能被读取，跨客户端的数据格式兼容需要由微信支持的迁移流程验证。
 
+Windows 完整历史与云端新消息的离线合并，已有一次真实原生微信验证，具体步骤、版本组合和未解决的搜索/媒体边界见 [Windows 历史导入验证记录](native-history-import.md)。该路径尚无通用一键入口。
+
 ## 开发验证
 
 安装前后端依赖后，可运行 `npm run check --prefix panel/server`、`npm test --prefix panel/server`、`npm run check --prefix panel/web` 和 `npm test --prefix panel/web`。后端 HTTP 测试使用真实 Fastify 和登录会话，Docker 指向不存在的临时 socket；它验证访问控制和写入前校验。

@@ -9,6 +9,7 @@ import { createConnection } from 'node:net';
 import Docker from 'dockerode';
 import { tarArchive, tarEntry, tarFileStream, tarSingleFile, openTarStream, scanArchive, sniffArchive } from './tar.js';
 import { instanceAppType, getDesktopDark, getDesktopQuality, listInstances, setInstanceMigration, setInstanceMigrationState, type Instance } from './store.js';
+import { historyMediaMounts } from './history-media.js';
 import {
   MIGRATION_CONTAINER_PORT,
   MigrationError,
@@ -931,6 +932,7 @@ export function runInstance(inst: Instance, opts?: { keepImage?: boolean }): Pro
   return withLifecycle(inst.id, () => runInstanceNow(inst, opts));
 }
 async function runInstanceNow(inst: Instance, opts?: { keepImage?: boolean; imageId?: string }): Promise<void> {
+  const mediaMounts = historyMediaMounts(inst.historyMedia);
   const migrationConfig = instanceMigrationConfig(inst);
   const migrationPorts = migrationContainerPorts(migrationConfig);
   if (migrationConfig.enabled && instanceAppType(inst) !== 'wechat') throw new MigrationError('聊天记录迁移仅支持微信实例');
@@ -948,6 +950,29 @@ async function runInstanceNow(inst: Instance, opts?: { keepImage?: boolean; imag
   // 网络又不通）就会把旧容器删掉却建不出新的，实例直接没了；现在拉取失败时旧容器原样保留。
   if (!imageOverride) await ensureImage(inst.id);
   else await docker.getImage(imageOverride).inspect(); // 恢复保存的原镜像也须先确认存在，再动当前容器。
+  if (mediaMounts.length) {
+    // Docker's structured bind mounts reject a missing source instead of
+    // creating an empty directory. Check before removing the working instance.
+    const probe = await docker.createContainer({
+      Image: imageOverride || WECHAT_IMAGE,
+      Entrypoint: ['sh', '-c'],
+      Cmd: ['for p in /check/*; do test -d "$p" && test -n "$(find "$p" -mindepth 1 -maxdepth 1 -print -quit)" || exit 1; done'],
+      Labels: { 'woc.helper': 'history-media-check' },
+      HostConfig: {
+        NetworkMode: 'none',
+        Memory: 64 * 1024 * 1024,
+        Mounts: mediaMounts.map((m, i) => ({ ...m, Target: `/check/${i}`, ReadOnly: true })),
+        LogConfig: { Type: 'json-file', Config: { 'max-size': '1m', 'max-file': '1' } },
+      },
+    });
+    try {
+      await probe.start();
+      const result = await probe.wait();
+      if (result.StatusCode !== 0) throw new Error('历史附件存储不可读或为空，请检查原存储盘；当前实例保留');
+    } finally {
+      await probe.remove({ force: true }).catch(() => {});
+    }
+  }
   if (inst.migration !== undefined && info?.Image) {
     // 停止实例保存后，下次 start 才重建。若 bind/start 失败删除了容器，后续重试仍有原镜像 ID。
     setInstanceMigrationState(inst.id, {
@@ -972,6 +997,7 @@ async function runInstanceNow(inst: Instance, opts?: { keepImage?: boolean; imag
   const dris = ENABLE_GPU ? driDevices() : [];
   const hostConfig: Docker.HostConfig = {
     Binds: [`${inst.volumeName}:/config`],
+    ...(mediaMounts.length ? { Mounts: mediaMounts } : {}),
     NetworkMode: net || undefined,
     SecurityOpt: ['seccomp=unconfined'],
     ShmSize: SHM_SIZE,
