@@ -1,6 +1,6 @@
 [package]
 name = "yunwei"
-version = "0.2.2"
+version = "0.2.3"
 description = "云微桌面客户端"
 edition = "2021"
 license = "MIT"

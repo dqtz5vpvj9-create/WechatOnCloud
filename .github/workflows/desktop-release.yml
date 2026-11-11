@@ -51,6 +51,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         run: npm run build -- --ci --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+      - name: Verify Windows release has no console subsystem
+        if: runner.os == 'Windows'
+        run: node scripts/verify-windows-gui.mjs src-tauri/target/${{ matrix.target }}/release/yunwei.exe
       - name: Collect installers and update signatures
         run: node scripts/release-manifest.mjs collect src-tauri/target/${{ matrix.target }}/release/bundle artifacts
       - uses: actions/upload-artifact@v4

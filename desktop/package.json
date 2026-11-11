@@ -1,7 +1,7 @@
 {
   "name": "woc-desktop",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.2.3",
   "type": "module",
   "scripts": {
     "icon": "tauri icon ../panel/web/public/icon-512.png",
