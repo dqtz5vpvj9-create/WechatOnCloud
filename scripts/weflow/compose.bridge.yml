@@ -1,0 +1,35 @@
+services:
+  bridge:
+    image: ${WOC_BRIDGE_IMAGE:?Set a pinned compatible instance image}
+    pull_policy: never
+    container_name: ${WOC_BRIDGE_CONTAINER:-woc-weflow-bridge}
+    user: "1000:1000"
+    entrypoint: ["python3", "/config/weflow/work/weflow_linux_bridge.py"]
+    environment:
+      WOC_BRIDGE_EXTERNAL: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 1.0
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: ${WOC_BRIDGE_CONFIG_ROOT:?Set the existing instance config root}/xwechat_files
+        target: /config/xwechat_files
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${WOC_BRIDGE_CONFIG_ROOT}/weflow
+        target: /config/weflow
+        bind:
+          create_host_path: false
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "2"

@@ -1740,7 +1740,11 @@ export async function setWeFlowConsumer(
   inst: Instance, kind: 'notifications' | 'desktop', active: boolean,
 ): Promise<void> {
   const marker = `/tmp/woc-weflow-consumer-${kind}`;
-  await execCapture(inst, active ? ['touch', marker] : ['rm', '-f', marker]).catch(() => {});
+  const directory = '/config/weflow/data/consumers';
+  const shared = `${directory}/${kind}`;
+  await execCapture(inst, active
+    ? ['sh', '-c', 'mkdir -p "$1" && chmod 700 "$1" && touch "$2" "$3"', 'woc-consumer', directory, marker, shared]
+    : ['rm', '-f', '--', marker, shared]).catch(() => {});
 }
 
 export async function weflowMutedSessions(inst: Instance): Promise<Set<string>> {

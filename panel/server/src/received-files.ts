@@ -1,14 +1,21 @@
-// Visit only WeChat's monthly file directories. Walking the account tree also
-// scans every image, database and retained backup before returning any files.
-export function receivedFilesCommand(root = '/config/xwechat_files'): string[] {
+import { readFileSync } from 'node:fs';
+
+const indexScript = readFileSync(new URL('./received_file_index.py', import.meta.url), 'utf8');
+
+// Persist monthly metadata; compatible images without Python retain the bounded
+// directory scan. No extra service or source-database access is required.
+export function receivedFilesCommand(root = '/config/xwechat_files', cache = '/config/.woc-file-index/index.sqlite'): string[] {
   return ['sh', '-c', String.raw`
-for account in "$1"/*; do
+if command -v python3 >/dev/null 2>&1; then
+  exec python3 -c "$1" "$2" "$3"
+fi
+for account in "$2"/*; do
   [ -d "$account" ] && [ ! -L "$account" ] || continue
   files="$account/msg/file"
   [ ! -L "$account/msg" ] && [ ! -L "$files" ] && [ -d "$files" ] || continue
   find "$files" -mindepth 2 -maxdepth 2 -type f -printf '%p\t%s\t%T@\n' || exit $?
 done
-`, 'woc-received-files', root];
+`, 'woc-received-files', indexScript, root, cache];
 }
 
 // month/name have already passed the API's basename/path validation. Pass them

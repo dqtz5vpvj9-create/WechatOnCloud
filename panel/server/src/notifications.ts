@@ -460,8 +460,8 @@ function ensurePushWatcher(inst: Instance) {
   pushWatchers.add(inst.id);
   watcherInstances.set(inst.id, inst);
   void (async () => {
-    await setWeFlowConsumer(inst, 'notifications', true);
     while (hasNotificationConsumers()) {
+      await setWeFlowConsumer(inst, 'notifications', true);
       try {
         await consumeWeFlowMessagePush(inst, (event) => {
           if (event?.success === true && event?.stream) {
