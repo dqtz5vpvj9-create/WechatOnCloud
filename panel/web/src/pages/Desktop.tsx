@@ -592,6 +592,11 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
   const [dragging, setDragging] = useState(false);
   const [showFiles, setShowFiles] = useState(false);
   const [files, setFiles] = useState<TFile[]>([]);
+  const [filesLoading, setFilesLoading] = useState(false);
+  const [filesError, setFilesError] = useState('');
+  const fileRequest = useRef<{ id: string; promise: Promise<void> } | null>(null);
+  const filesInstance = useRef(id);
+  filesInstance.current = id;
   const [showClip, setShowClip] = useState(false);
   const [clipText, setClipText] = useState('');
   // 中文输入模式：'forward'=底部输入条转发（默认，最稳）；'seamless'=无感（直接在微信里打，提交后转发）。
@@ -766,6 +771,8 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
     setLoadStuck(false);
     setShowFiles(false);
     setFiles([]);
+    setFilesLoading(false);
+    setFilesError('');
     setShowClip(false);
     setClipText('');
     setImeText('');
@@ -1193,19 +1200,39 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showVnc, frameLoaded, frameGen, id]);
 
+  const refreshFiles = useCallback((): Promise<void> => {
+    if (!id) return Promise.resolve();
+    if (fileRequest.current?.id === id) return fileRequest.current.promise;
+    setFilesLoading(true);
+    setFilesError('');
+    const promise: Promise<void> = api.listFiles(id).then(({ files }) => {
+      if (filesInstance.current === id) setFiles(files);
+    }).catch(() => {
+      if (filesInstance.current === id) setFilesError('读取文件列表失败，请重试');
+    }).finally(() => {
+      if (filesInstance.current === id) setFilesLoading(false);
+      if (fileRequest.current?.promise === promise) fileRequest.current = null;
+    });
+    fileRequest.current = { id, promise };
+    return promise;
+  }, [id]);
+
+  useEffect(() => {
+    if (!showFiles) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      if (!document.hidden) await refreshFiles();
+      if (!stopped) timer = setTimeout(poll, 2000);
+    };
+    void poll();
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [showFiles, refreshFiles]);
+
   if (!id) {
     nav('/', { replace: true });
     return null;
   }
-
-  const refreshFiles = async () => {
-    try {
-      const { files } = await api.listFiles(id);
-      setFiles(files);
-    } catch {
-      /* ignore */
-    }
-  };
 
   // 逐个上传；上传途中再拖进 / 粘贴 / 选择的文件排进队列，由正在跑的这一轮接着传（此前会另起一轮并发上传）
   const uploadFiles = async (list: FileList | File[], send = false) => {
@@ -1565,10 +1592,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
               className={'ws-action' + (showFiles ? ' on' : '')}
               title="文件传输"
               aria-pressed={showFiles}
-              onClick={() => {
-                setShowFiles((v) => !v);
-                if (!showFiles) refreshFiles();
-              }}
+              onClick={() => setShowFiles((v) => !v)}
             >
               <IcFolder />
               <span>{uploading ? `文件 ${uploadPct}` : '文件'}</span>
@@ -1863,9 +1887,12 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
               </button>
               <div className="files-hint">把文件拖进桌面即可发到当前聊天。微信已经下载的文件会直接出现在下方。</div>
               <div className="files-list">
-                {files.length === 0 && (
-                  <div className="muted small" style={{ padding: '10px 2px' }}>
-                    暂无文件
+                {filesError && <div role="alert" className="small" style={{ padding: '10px 2px' }}>
+                  {filesError} <button className="btn-text" onClick={() => void refreshFiles()}>重试</button>
+                </div>}
+                {files.length === 0 && !filesError && (
+                  <div role="status" className="muted small" style={{ padding: '10px 2px' }}>
+                    {filesLoading ? '正在读取文件…' : '暂无文件'}
                   </div>
                 )}
                 {files.map((f) => (

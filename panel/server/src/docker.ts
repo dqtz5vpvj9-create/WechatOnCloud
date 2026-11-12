@@ -10,6 +10,7 @@ import Docker from 'dockerode';
 import { tarArchive, tarEntry, tarFileStream, tarSingleFile, openTarStream, scanArchive, sniffArchive } from './tar.js';
 import { instanceAppType, getDesktopDark, getDesktopQuality, listInstances, setInstanceMigration, setInstanceMigrationState, type Instance } from './store.js';
 import { historyMediaMounts } from './history-media.js';
+import { receivedFileCommand, receivedFilesCommand } from './received-files.js';
 import {
   MIGRATION_CONTAINER_PORT,
   MigrationError,
@@ -2308,9 +2309,7 @@ export async function listInstanceFiles(inst: Instance): Promise<TransferFile[]>
       const [name, size, mtime] = line.split('\t');
       return { name, size: Number(size) || 0, mtime: Math.round(Number(mtime) || 0), source: 'desktop' as const };
     })
-  const receivedOut = await execCapture(inst, [
-    'find', '/config/xwechat_files', '-type', 'f', '-path', '*/msg/file/*/*', '-printf', '%p\t%s\t%T@\n',
-  ]).catch(() => '');
+  const receivedOut = await execCapture(inst, receivedFilesCommand());
   const received = receivedOut.split('\n').filter(Boolean).flatMap((line): TransferFile[] => {
     const [absPath, size, mtime] = line.split('\t');
     const marker = '/msg/file/';
@@ -2343,10 +2342,7 @@ export async function pasteFileInInstance(inst: Instance, name: string, weflow =
 export async function downloadReceivedFile(inst: Instance, path: string): Promise<{ size: number; stream: NodeJS.ReadableStream }> {
   const [month, name, extra] = String(path || '').split('/');
   if (extra !== undefined || !/^\d{4}-\d{2}$/.test(month) || !safeName(name)) throw new Error('文件路径不合法');
-  const escapedName = name.replace(/([*?[\]\\])/g, '\\$1');
-  const found = (await execCapture(inst, [
-    'find', '/config/xwechat_files', '-type', 'f', '-path', `*/msg/file/${month}/${escapedName}`, '-print', '-quit',
-  ], 'root')).trim();
+  const found = (await execCapture(inst, receivedFileCommand(month, name), 'root')).trim();
   if (!found || !found.startsWith('/config/xwechat_files/') || found.includes('\n')) throw new Error('文件不存在或尚未下载完成');
   return streamRegularFile(inst, found);
 }

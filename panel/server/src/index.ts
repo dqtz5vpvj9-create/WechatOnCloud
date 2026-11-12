@@ -1212,10 +1212,12 @@ app.get('/api/instances/:id/files', async (req, reply) => {
   if (!u) return;
   const id = (req.params as any).id;
   if (!userCanAccess(u, id)) return reply.code(403).send({ error: '无权访问该实例' });
+  const inst = findInstance(id);
+  if (!inst) return reply.code(404).send({ error: '实例不存在' });
   try {
-    return { files: await listInstanceFiles(findInstance(id)!) };
+    return { files: await listInstanceFiles(inst) };
   } catch {
-    return { files: [] };
+    return reply.code(503).send({ error: '读取文件列表失败，请稍后重试' });
   }
 });
 
