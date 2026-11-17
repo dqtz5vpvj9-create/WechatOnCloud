@@ -134,7 +134,7 @@ import {
   isRequestHostAllowed,
   isLoopbackHost,
 } from './host-guard.js';
-import { CURRENT_VERSION, versionInfo, ensureChecked, checkForUpdate, startUpdateChecker } from './version.js';
+import { CURRENT_VERSION, UPDATE_TRACK_ONLY, versionInfo, ensureChecked, checkForUpdate, startUpdateChecker } from './version.js';
 import { triggerSelfUpdate } from './self-update.js';
 import { GiB, MiB, readBody, receiveFile, spoolUpload, cleanSpoolDir, type Spooled } from './upload.js';
 import { appendInstanceLog, readInstanceLog, appendPanelLog, readPanelLog, pruneOldLogs, filterSince, rangeToMs, DIAG_RANGES } from './logs.js';
@@ -465,6 +465,7 @@ app.post('/api/admin/version/check', async (req, reply) => {
 // 返回后面板会在十几秒内被 helper 重启，前端提示用户稍候刷新。
 app.post('/api/admin/version/self-update', async (req, reply) => {
   if (!requireAdmin(req, reply)) return;
+  if (UPDATE_TRACK_ONLY) return reply.code(409).send({ error: '当前面板使用定制构建，不能直接替换为上游镜像' });
   try {
     const self = await inspectSelf().catch(() => null);
     const { target } = await triggerSelfUpdate(self?.Id);

@@ -134,6 +134,7 @@ export interface VersionInfo {
   checkedAt: number; // 上次检查时间戳（ms）；0=尚未检查
   source: string | null; // 数据来源：dockerhub / ghcr / dockerhub+ghcr
   error: string | null; // 检查失败原因
+  trackOnly: boolean; // 仅查看上游版本
 }
 
 // 反代身份网关（Cloudflare Access / Authelia 等）会话过期时，会把 API 请求 302 到它的跨域登录页；

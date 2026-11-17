@@ -48,6 +48,7 @@ test('migration HTTP API requires admin and rejects invalid configuration before
       PORT: String(port), HOST: '127.0.0.1',
       DOCKER_HOST: 'unix://' + join(dir, 'absent-docker.sock'),
       WOC_VERSION: 'dev-migration-test',
+      WOC_UPDATE_TRACK_ONLY: '1',
       WOC_WECHAT_IMAGE: 'migration-test-local:latest',
       WOC_WATCHDOG_INTERVAL_SEC: '0',
       WOC_DOCKER_NETWORK: '', WOC_INSTANCE_NETWORK: 'migration-test-network',
@@ -106,6 +107,7 @@ test('migration HTTP API requires admin and rejects invalid configuration before
       assert.equal((await request(method, path, subCookie, body)).status, 403);
     }
     const adminCookie = await login('test-admin');
+    assert.equal((await request('POST', '/api/admin/version/self-update', adminCookie)).status, 409);
     assert.equal((await request('POST', '/api/admin/desktop-quality', adminCookie, { quality: 'invalid' })).status, 400);
     assert.equal((await request('GET', '/api/desktop-quality', subCookie)).status, 200);
     assert.equal((await request('GET', '/api/instances/missing/clipboard-image', adminCookie)).status, 403, 'instance access checks also reject nonexistent instances');

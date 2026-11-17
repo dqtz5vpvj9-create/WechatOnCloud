@@ -196,6 +196,7 @@ function AboutSection({ isAdmin }: { isAdmin: boolean }) {
       setInfo(r);
       const rel = /^v?\d+\.\d+\.\d+$/.test(r.current);
       if (r.error) toast('检查失败：' + r.error, 'error');
+      else if (r.trackOnly) toast(`上游最新发布 ${r.latest ?? '未知'}`, 'ok');
       else if (r.hasUpdate) toast(`发现新版本 ${r.latest}`, 'ok');
       else if (!rel) toast(`最新发布 ${r.latest ?? '未知'}（当前为开发版）`, 'ok');
       else toast('已是最新版本', 'ok');
@@ -229,8 +230,8 @@ function AboutSection({ isAdmin }: { isAdmin: boolean }) {
         </div>
         {info?.latest && !info.error && (
           <div className="g-row">
-            <span className="g-label">最新{info.isDev ? '发布' : '版本'}</span>
-            <span className="g-value">{info.hasUpdate || info.isDev ? info.latest : `${info.latest}（已是最新）`}</span>
+            <span className="g-label">{info.trackOnly ? '上游最新发布' : `最新${info.isDev ? '发布' : '版本'}`}</span>
+            <span className="g-value">{info.trackOnly || info.hasUpdate || info.isDev ? info.latest : `${info.latest}（已是最新）`}</span>
           </div>
         )}
         {info?.hasUpdate && isAdmin && (
@@ -255,6 +256,7 @@ function AboutSection({ isAdmin }: { isAdmin: boolean }) {
       {(updateNote || (isAdmin && (outdatedInst > 0 || remoteNewer)) || info?.error || info?.source) && (
         <p className="group-foot">
           {updateNote}
+          {info?.trackOnly && '当前面板为定制构建，上游版本仅供参考。'}
           {isAdmin && (outdatedInst > 0 || remoteNewer) && (
             <>
               {outdatedInst > 0 ? `另有 ${outdatedInst} 个实例的镜像可升级。` : '实例镜像检测到新版本。'}

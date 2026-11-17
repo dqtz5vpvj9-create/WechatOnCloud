@@ -6,3 +6,6 @@ services:
     pull_policy: never
     environment:
       WOC_WECHAT_IMAGE: ghcr.io/dqtz5vpvj9-create/wechat-on-cloud:${WOC_FORK_TAG:-dev-local}
+      # 定制构建只跟踪上游发布，避免一键更新替换本地功能。
+      WOC_UPDATE_OWNER: gloridust
+      WOC_UPDATE_TRACK_ONLY: "1"

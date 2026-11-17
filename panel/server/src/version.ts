@@ -13,11 +13,14 @@ export interface VersionInfo {
   checkedAt: number; // 上次检查时间戳（ms）；0 = 尚未检查
   source: string | null; // 数据来源：dockerhub / ghcr / dockerhub+ghcr
   error: string | null; // 检查失败原因（两个源都拉不到时）
+  trackOnly: boolean; // 仅查看上游版本，不将上游镜像作为本面板更新
 }
 
 // 镜像命名空间：从 WOC_WECHAT_IMAGE 推断（面板与实例镜像同账号）。
 // 例 docker.io/gloridust/wechat-on-cloud:latest → gloridust；ghcr.io/gloridust/... 同理。
 function imageOwner(): string {
+  const configured = process.env.WOC_UPDATE_OWNER?.trim();
+  if (configured) return configured;
   const img = (process.env.WOC_WECHAT_IMAGE || 'docker.io/gloridust/wechat-on-cloud').split('@')[0];
   const segs = img.split('/'); // [registry?, owner, image[:tag]]
   return segs.length >= 2 ? segs[segs.length - 2] : 'gloridust';
@@ -67,8 +70,9 @@ async function ghcrTags(owner: string): Promise<string[]> {
 
 // 当前是否为"开发版"（非正式 vX.Y.Z，如本地/自构建的 dev-<sha>）。开发版允许一键"升级到正式版"。
 const IS_DEV = !parseSemver(CURRENT_VERSION);
+export const UPDATE_TRACK_ONLY = process.env.WOC_UPDATE_TRACK_ONLY === '1';
 
-let cache: VersionInfo = { current: CURRENT_VERSION, latest: null, hasUpdate: false, isDev: IS_DEV, checkedAt: 0, source: null, error: null };
+let cache: VersionInfo = { current: CURRENT_VERSION, latest: null, hasUpdate: false, isDev: IS_DEV, checkedAt: 0, source: null, error: null, trackOnly: UPDATE_TRACK_ONLY };
 let inflight: Promise<VersionInfo> | null = null;
 
 export function versionInfo(): VersionInfo {
@@ -95,7 +99,9 @@ export function checkForUpdate(): Promise<VersionInfo> {
     const cur = parseSemver(CURRENT_VERSION);
     const latestV = latestBare ? parseSemver(latestBare) : null;
     // 正式版：仅当 latest > current 才算有更新；开发版：查到任一正式版即可"升级到正式版"。
-    const hasUpdate = IS_DEV ? !!latestV : !!(latestV && cur && cmpSemver(latestV, cur) > 0);
+    const hasUpdate = !UPDATE_TRACK_ONLY && (IS_DEV ? !!latestV : !!(latestV && cur && cmpSemver(latestV, cur) > 0));
+    const errors = [hub, ghcr].filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    const inaccessible = errors.length === 2 && errors.every(r => /HTTP (401|403|404)\b/.test(String(r.reason)));
     cache = {
       current: CURRENT_VERSION,
       latest: latestBare ? `v${latestBare}` : null,
@@ -103,7 +109,9 @@ export function checkForUpdate(): Promise<VersionInfo> {
       isDev: IS_DEV,
       checkedAt: Date.now(),
       source: sources.join('+') || null,
-      error: tags.length ? null : '无法连接镜像仓库（Docker Hub / GHCR）',
+      error: tags.length ? null : inaccessible ? '镜像仓库不存在或无权访问（Docker Hub / GHCR）'
+        : errors.length ? '无法连接镜像仓库（Docker Hub / GHCR）' : '镜像仓库未返回标签',
+      trackOnly: UPDATE_TRACK_ONLY,
     };
     return cache;
   })().finally(() => {
