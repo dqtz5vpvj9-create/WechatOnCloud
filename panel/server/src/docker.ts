@@ -2688,6 +2688,32 @@ export async function pasteImageInInstance(inst: Instance, mime: string, content
 // PR #162：读取应用复制的图片，绕过 KasmVNC 已禁用的 PNG 同步。
 // 与输入共用各显示会话的锁，避免读取到无感输入临时借用的剪贴板。
 export const CLIPBOARD_IMAGE_MAX = 64 * 1024 * 1024;
+// One XFixes subscriber per open desktop. No clipboard contents are sent on
+// this channel. Its stdin closes with the Docker stream so the helper exits.
+export async function watchClipboardChanges(inst: Instance, weflow: boolean, onLine: (line: string) => void, onEnd: () => void): Promise<() => void> {
+  const program = readFileSync(new URL('./clipboard_watch.py', import.meta.url), 'utf8');
+  const exec = await docker.getContainer(inst.containerName).exec({
+    Cmd: ['python3', '-u', '-c', program], User: 'abc', Env: [`DISPLAY=${weflow ? ':2' : ':1'}`],
+    AttachStdin: true, AttachStdout: true, AttachStderr: true, Tty: false,
+  });
+  const stream = await exec.start({ hijack: true, stdin: true });
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  docker.modem.demuxStream(stream, stdout, stderr);
+  stderr.resume();
+  let pending = '';
+  stdout.on('data', (data: Buffer) => {
+    pending += data.toString('utf8');
+    if (pending.length > 4096) { stream.destroy(); return; }
+    const lines = pending.split(/\r?\n/);
+    pending = lines.pop() || '';
+    for (const line of lines) if (line === 'ready' || line === 'changed' || line === 'keepalive') onLine(line);
+  });
+  stream.on('error', () => {});
+  stream.on('close', onEnd);
+  stream.on('end', onEnd);
+  return () => stream.destroy();
+}
 export async function readClipboardImage(inst: Instance, weflow = false): Promise<Buffer> {
   return withClipLock(screenKey(inst, weflow), async () => {
     if (cancelClipRestore(screenKey(inst, weflow))) await restoreClipboard(inst, weflow);
@@ -2697,7 +2723,7 @@ export async function readClipboardImage(inst: Instance, weflow = false): Promis
       'printf "%s\\n" "$targets" | grep -qxF image/png || { echo "剪贴板里没有图片，请先在应用里复制图片" >&2; exit 3; }',
       // execCapture 按 UTF-8 收取 stdout；先 base64 保证二进制完整，并限制输出大小。
       'set +e',
-      `timeout 10 xclip -o -selection clipboard -t image/png 2>/dev/null | head -c ${CLIPBOARD_IMAGE_MAX + 1} | base64 -w0`,
+      `timeout 45 xclip -o -selection clipboard -t image/png 2>/dev/null | head -c ${CLIPBOARD_IMAGE_MAX + 1} | base64 -w0`,
       'rc=("${PIPESTATUS[@]}")',
       // head 达到上限会让 xclip 收到 SIGPIPE(141)，大小错误由解码后的长度判断。
       'if { [ "${rc[0]}" -ne 0 ] && [ "${rc[0]}" -ne 141 ]; } || [ "${rc[1]}" -ne 0 ] || [ "${rc[2]}" -ne 0 ]; then',

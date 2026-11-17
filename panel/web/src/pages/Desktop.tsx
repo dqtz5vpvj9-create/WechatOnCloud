@@ -4,6 +4,7 @@ import { api, appProfile, fmtUploadSize, provisionProgressText, reclaimViewer, V
 import { browserImageCodec, fitPasteImage, pasteImageWithFallback } from '../pasteImage';
 import { copyImageToLocalClipboard } from '../copyImage';
 import { installSafariClipboard } from '../safariClipboard';
+import { installAutomaticImageCopy, type ImageCopyStatus } from '../automaticImageCopy';
 import { connectDisplayQuality, QualityToggle, useDisplayQuality } from '../displayQuality';
 import { useUI } from '../ui';
 import { useAuth } from '../auth';
@@ -580,6 +581,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
   const isAdmin = user?.role === 'admin';
 
   const [frameLoaded, setFrameLoaded] = useState(false);
+  const [imageCopyStatus, setImageCopyStatus] = useState<ImageCopyStatus>(null);
   // Native window visibility does not own the remote connection lifecycle.
   // Alt/Option+W must retain the iframe/socket for any duration of hiding.
   // iframe 每载入一个新文档就 +1。iframe 会在页内自行换文档：实例短暂不可用时反代先回「自动重连」页，它 3s 后
@@ -1008,6 +1010,13 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
     } catch {
       return;
     }
+  }, [showVnc, frameLoaded, frameGen, id]);
+
+  useEffect(() => {
+    if (!showVnc || !frameLoaded || !id) return;
+    const win = frameRef.current?.contentWindow;
+    if (!win) return;
+    return installAutomaticImageCopy(win, id, setImageCopyStatus);
   }, [showVnc, frameLoaded, frameGen, id]);
 
   // 无感模式：往同源 iframe 装「中文转发 + 有序队列」钩子；切回转发/重连/卸载时自动移除。
@@ -1576,6 +1585,15 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
 
   return (
     <div className="ws-page">
+      {imageCopyStatus && <div className="image-copy-progress" role="status" aria-live="polite">
+        {imageCopyStatus.phase === 'reading' ? '正在同步剪贴板…'
+          : imageCopyStatus.phase === 'transferring' ? `正在复制图片${imageCopyStatus.percent === undefined ? '…' : ` ${imageCopyStatus.percent}%`}`
+          : imageCopyStatus.phase === 'writing' ? '正在写入本机剪贴板…'
+          : imageCopyStatus.phase === 'done' ? '图片已复制，可直接粘贴'
+          : imageCopyStatus.message || '复制图片失败'}
+        {imageCopyStatus.phase === 'transferring' && imageCopyStatus.percent !== undefined &&
+          <progress max={100} value={imageCopyStatus.percent} aria-label="图片复制进度" />}
+      </div>}
       <header className="ws-head">
         <button className="ws-menu" onClick={onOpenMenu} aria-label="菜单">
           {MenuIcon}

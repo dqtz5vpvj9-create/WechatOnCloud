@@ -1,4 +1,14 @@
 [[permission]]
+identifier = "allow-remote-image-copy"
+description = "Copies an image from the active WeChat desktop after a recent user gesture."
+commands.allow = ["begin_remote_image_copy", "finish_remote_image_copy"]
+
+[[permission]]
+identifier = "allow-remote-copy-test-state"
+description = "Reports clipboard regression state only in automation instances."
+commands.allow = ["remote_copy_test_state"]
+
+[[permission]]
 identifier = "allow-set-taskbar-unread"
 description = "Allows the 云微 web client to update its taskbar or Dock unread badge."
 commands.allow = ["set_taskbar_unread"]

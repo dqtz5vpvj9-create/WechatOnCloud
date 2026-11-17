@@ -14,6 +14,7 @@ use tauri::{
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
 
+mod clipboard;
 mod downloads;
 mod updater;
 
@@ -919,6 +920,7 @@ pub fn run() {
     let app = builder
         .manage(TaskbarState::default())
         .manage(downloads::Downloads::default())
+        .manage(clipboard::CopyState::default())
         .manage(updater::Updates::default())
         .invoke_handler(tauri::generate_handler![
             updater::desktop_update,
@@ -932,6 +934,9 @@ pub fn run() {
             get_taskbar_unread_state,
             show_tray_preview_for_test,
             get_desktop_runtime_state,
+            clipboard::begin_remote_image_copy,
+            clipboard::finish_remote_image_copy,
+            clipboard::remote_copy_test_state,
             open_download_path
         ])
         .setup(move |app| {

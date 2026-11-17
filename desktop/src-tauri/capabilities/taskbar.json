@@ -7,6 +7,8 @@
     "urls": ["https://wechat.tail.lixinrui000.cn/*"]
   },
   "permissions": [
+    "allow-remote-image-copy",
+    "allow-remote-copy-test-state",
     "allow-desktop-update",
     "allow-set-taskbar-unread",
     "allow-set-desktop-notification",

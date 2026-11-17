@@ -83,6 +83,7 @@ import {
   keyInInstance,
   pasteImageInInstance,
   readClipboardImage,
+  watchClipboardChanges,
   PASTE_IMAGE_PNG_MAX,
   instanceAcceptsLargePng,
   PASTE_IMAGE_PNG_TOO_BIG,
@@ -1434,6 +1435,33 @@ app.post('/api/instances/:id/paste-image', async (req, reply) => {
   }
 });
 
+// XFixes events carry no clipboard contents. The separate image endpoint is
+// called only after a recent copy gesture in the active desktop.
+app.get('/api/instances/:id/clipboard-events', async (req, reply) => {
+  const u = requireAuth(req, reply);
+  if (!u) return;
+  const id = (req.params as any).id;
+  if (!userCanAccess(u, id)) return reply.code(403).send({ error: '无权访问该实例' });
+  const inst = findInstance(id);
+  if (!inst) return reply.code(404).send({ error: '实例不存在' });
+  const key = displayKey(id, req);
+  if (supersededBy(key, viewerOf(req))) return reply.code(409).send({ error: '桌面已在别处打开' });
+  reply.hijack();
+  reply.raw.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
+  let closed = false;
+  let stop: (() => void) | undefined;
+  const close = () => { if (closed) return; closed = true; stop?.(); if (!reply.raw.destroyed) reply.raw.end(); };
+  reply.raw.on('close', close);
+  try {
+    stop = await watchClipboardChanges(inst, useWeFlow(req, id), line => {
+      if (closed) return;
+      if (supersededBy(key, viewerOf(req))) { close(); return; }
+      reply.raw.write(line === 'changed' ? 'event: changed\ndata: 1\n\n' : ': keepalive\n\n');
+    }, close);
+    if (closed) stop();
+  } catch { close(); }
+});
+
 // 应用图片 → 本机剪贴板。读取使用当前显示会话，不占用远端控制权。
 app.get('/api/instances/:id/clipboard-image', async (req, reply) => {
   reply.header('Cache-Control', 'no-store');
@@ -1441,6 +1469,8 @@ app.get('/api/instances/:id/clipboard-image', async (req, reply) => {
   if (!u) return;
   const id = (req.params as any).id;
   if (!userCanAccess(u, id)) return reply.code(403).send({ error: '无权访问该实例' });
+  const sup = supersededBy(displayKey(id, req), viewerOf(req));
+  if (sup) return reply.code(409).send(supersededBusy(sup));
   const inst = findInstance(id);
   if (!inst) return reply.code(404).send({ error: '实例不存在' });
   try {

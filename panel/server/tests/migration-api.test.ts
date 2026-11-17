@@ -83,6 +83,7 @@ test('migration HTTP API requires admin and rejects invalid configuration before
     assert.equal((await request('GET', '/api/desktop-quality')).status, 401);
     assert.equal((await request('POST', '/api/admin/desktop-quality', undefined, { quality: 'hd' })).status, 401);
     assert.equal((await request('GET', '/api/instances/1111111111/clipboard-image')).status, 401);
+    assert.equal((await request('GET', '/api/instances/1111111111/clipboard-events')).status, 401);
     for (const [method, path, body] of [
       ['GET', route, undefined], ['PUT', route, { enabled: false }], ['POST', route + '/check', undefined],
     ] as const) {
@@ -98,6 +99,7 @@ test('migration HTTP API requires admin and rejects invalid configuration before
     const subCookie = await login('test-sub');
     assert.equal((await request('POST', '/api/admin/desktop-quality', subCookie, { quality: 'hd' })).status, 403);
     assert.equal((await request('GET', '/api/instances/2222222222/clipboard-image', subCookie)).status, 403);
+    assert.equal((await request('GET', '/api/instances/2222222222/clipboard-events', subCookie)).status, 403);
     for (const [method, path, body] of [
       ['GET', route, undefined], ['PUT', route, { enabled: false }], ['POST', route + '/check', undefined],
     ] as const) {

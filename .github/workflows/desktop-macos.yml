@@ -49,7 +49,7 @@ jobs:
       - name: Check formatting and native logic
         run: |
           cargo fmt --manifest-path src-tauri/Cargo.toml --check
-          cargo test --manifest-path src-tauri/Cargo.toml --locked
+          WOC_NATIVE_CLIPBOARD_TEST=1 cargo test --manifest-path src-tauri/Cargo.toml --locked
       - name: Verify WebKit remote input
         run: |
           npx playwright install webkit

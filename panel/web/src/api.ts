@@ -484,22 +484,56 @@ export const api = {
     if (!data?.ok) throw new Error('粘贴结果未知（收到的不是面板的响应），请刷新页面后重试');
     return data;
   },
-  clipboardImage: async (id: string): Promise<Blob> => {
+  clipboardImage: async (id: string, onProgress?: (received: number, total: number | null) => void): Promise<Blob> => {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 20_000);
+    const timer = setTimeout(() => controller.abort(), 120_000);
     try {
       const res = await apiFetch(`/api/instances/${id}/clipboard-image`, {
         credentials: 'same-origin', cache: 'no-store', headers: viewerHeader, signal: controller.signal,
       });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || '读取剪贴板图片失败');
       if (!res.headers.get('content-type')?.startsWith('image/png')) throw new Error('收到的图片响应无效，请刷新云微后重试');
-      return await res.blob();
+      if (!onProgress || !res.body) return await res.blob();
+      const size = Number(res.headers.get('content-length'));
+      const total = Number.isFinite(size) && size > 0 ? size : null;
+      const reader = res.body.getReader();
+      const chunks: ArrayBuffer[] = [];
+      let received = 0;
+      for (;;) {
+        const part = await reader.read();
+        if (part.done) break;
+        received += part.value.byteLength;
+        if (received > 64 * 1024 * 1024) throw new Error('图片超过 64 MiB，无法复制');
+        chunks.push(Uint8Array.from(part.value).buffer);
+        onProgress(received, total);
+      }
+      return new Blob(chunks, { type: 'image/png' });
     } catch (error) {
       if (controller.signal.aborted) throw new Error('读取图片超时，请检查连接后重试');
       throw error;
     } finally {
       clearTimeout(timer);
     }
+  },
+  clipboardEvents: async (id: string, signal: AbortSignal, changed: () => void): Promise<void> => {
+    const res = await apiFetch(`/api/instances/${id}/clipboard-events`, {
+      credentials: 'same-origin', cache: 'no-store', headers: viewerHeader, signal,
+    });
+    if (!res.ok || !res.body) throw new Error('剪贴板事件连接失败');
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let pending = '';
+    try {
+      for (;;) {
+        const part = await reader.read();
+        if (part.done) break;
+        pending += decoder.decode(part.value, { stream: true });
+        if (pending.length > 4096) throw new Error('剪贴板事件格式无效');
+        const messages = pending.split('\n\n');
+        pending = messages.pop() || '';
+        for (const message of messages) if (message.split('\n').includes('event: changed')) changed();
+      }
+    } finally { reader.releaseLock(); }
   },
   downloadFileUrl: (id: string, name: string, received?: string) => received
     ? `/api/instances/${id}/download?received=${encodeURIComponent(received)}`
