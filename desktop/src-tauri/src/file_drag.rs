@@ -5,18 +5,11 @@ use tauri::WebviewWindow;
 pub struct RemoteDragItem {
     name: String,
     ticket: String,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     directory: bool,
 }
 
-#[tauri::command]
-pub fn start_remote_file_drag(
-    window: WebviewWindow,
-    id: String,
-    files: Vec<RemoteDragItem>,
-) -> Result<(), String> {
-    if window.label() != super::MAIN_WINDOW || !super::main_window_is_foreground(&window) {
-        return Err("桌面窗口未激活".into());
-    }
+fn validate(id: &str, files: &[RemoteDragItem]) -> Result<(), String> {
     if id.len() < 6
         || id.len() > 64
         || !id.bytes().all(|c| c.is_ascii_hexdigit())
@@ -25,7 +18,7 @@ pub fn start_remote_file_drag(
     {
         return Err("无效的文件拖拽请求".into());
     }
-    for file in &files {
+    for file in files {
         if file.name.is_empty()
             || file.name.len() > 240
             || file.name == "."
@@ -43,6 +36,19 @@ pub fn start_remote_file_drag(
             return Err("无效的文件拖拽请求".into());
         }
     }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn start_remote_file_drag(
+    window: WebviewWindow,
+    id: String,
+    files: Vec<RemoteDragItem>,
+) -> Result<(), String> {
+    if window.label() != super::MAIN_WINDOW || !super::main_window_is_foreground(&window) {
+        return Err("桌面窗口未激活".into());
+    }
+    validate(&id, &files)?;
     #[cfg(target_os = "macos")]
     {
         use std::fs::OpenOptions;
@@ -95,5 +101,25 @@ pub fn start_remote_file_drag(
     {
         let _ = (window, id, files);
         Err("当前系统尚不支持拖出文件".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn item(name: &str, ticket: &str) -> RemoteDragItem {
+        RemoteDragItem {
+            name: name.into(),
+            ticket: ticket.into(),
+            directory: false,
+        }
+    }
+    #[test]
+    fn rejects_paths_and_invalid_tickets() {
+        let ticket = "a".repeat(43);
+        assert!(validate("aabbcc1234", &[item("中文.pdf", &ticket)]).is_ok());
+        assert!(validate("aabbcc1234", &[item("../x", &ticket)]).is_err());
+        assert!(validate("aabbcc1234", &[item("a.txt", "short")]).is_err());
+        assert!(validate("../../etc", &[item("a.txt", &ticket)]).is_err());
     }
 }
