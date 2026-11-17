@@ -8,6 +8,7 @@
   },
   "permissions": [
     "allow-remote-image-copy",
+    "allow-remote-file-drag",
     "allow-remote-copy-test-state",
     "allow-desktop-update",
     "allow-set-taskbar-unread",

@@ -4,6 +4,11 @@ description = "Copies an image from the active WeChat desktop after a recent use
 commands.allow = ["begin_remote_image_copy", "finish_remote_image_copy"]
 
 [[permission]]
+identifier = "allow-remote-file-drag"
+description = "Starts a native drag of authorized remote files."
+commands.allow = ["start_remote_file_drag"]
+
+[[permission]]
 identifier = "allow-remote-copy-test-state"
 description = "Reports clipboard regression state only in automation instances."
 commands.allow = ["remote_copy_test_state"]

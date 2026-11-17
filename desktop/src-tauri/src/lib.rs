@@ -16,6 +16,7 @@ use tauri_plugin_notification::NotificationExt;
 
 mod clipboard;
 mod downloads;
+mod file_drag;
 mod updater;
 
 const MAIN_WINDOW: &str = "main";
@@ -907,6 +908,12 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build());
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(
+        tauri_plugin_dragout::Builder::new()
+            .path_filter(|_| false)
+            .build(),
+    );
     let builder = if automation_enabled {
         builder
     } else {
@@ -937,6 +944,7 @@ pub fn run() {
             clipboard::begin_remote_image_copy,
             clipboard::finish_remote_image_copy,
             clipboard::remote_copy_test_state,
+            file_drag::start_remote_file_drag,
             open_download_path
         ])
         .setup(move |app| {

@@ -1,0 +1,29 @@
+name: filescreen-macos-check
+on:
+  push:
+    branches: ['desktop/filescreen-ci-*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: macos-15
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+      - run: npm ci
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+      - run: cargo check --locked --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+      - run: cargo check --locked --manifest-path src-tauri/Cargo.toml --target x86_64-apple-darwin
