@@ -1591,8 +1591,8 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
           : imageCopyStatus.phase === 'writing' ? '正在写入本机剪贴板…'
           : imageCopyStatus.phase === 'done' ? '图片已复制，可直接粘贴'
           : imageCopyStatus.message || '复制图片失败'}
-        {imageCopyStatus.phase === 'transferring' && imageCopyStatus.percent !== undefined &&
-          <progress max={100} value={imageCopyStatus.percent} aria-label="图片复制进度" />}
+        {(imageCopyStatus.phase === 'reading' || imageCopyStatus.phase === 'transferring' || imageCopyStatus.phase === 'writing') &&
+          <progress max={100} value={imageCopyStatus.phase === 'transferring' ? imageCopyStatus.percent : undefined} aria-label="图片复制进度" />}
       </div>}
       <header className="ws-head">
         <button className="ws-menu" onClick={onOpenMenu} aria-label="菜单">

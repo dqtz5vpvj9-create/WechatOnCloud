@@ -60,6 +60,7 @@ test('slow image read shows progress and finishes without a toolbar', async ({ a
     await browser.keyboard.press('Control+c');
     await browser.evaluate(() => (window as any).emitClipboardChange());
     await expect(screen.getByText('正在同步剪贴板…', { exact: true })).toBeVisible();
+    await expect(screen.getByRole('progressbar', { name: '图片复制进度' })).toBeVisible();
     release();
     await expect(screen.getByText('图片已复制，可直接粘贴', { exact: true })).toBeVisible();
   } finally { release(); }
