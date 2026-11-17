@@ -1,0 +1,66 @@
+name: desktop-candidate
+on:
+  workflow_dispatch:
+  push:
+    branches: ['desktop/clipboard-ci-*']
+    paths: ['desktop/**', '.github/workflows/desktop-candidate.yml']
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+          - os: macos-15
+            target: universal-apple-darwin
+            bundles: app,dmg
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: desktop
+        shell: bash
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'macos-15' && 'aarch64-apple-darwin,x86_64-apple-darwin' || 'x86_64-pc-windows-msvc' }}
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+      - run: npm ci
+      - name: Check native logic
+        run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml --check
+          cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - name: Verify macOS clipboard
+        if: runner.os == 'macOS'
+        env:
+          WOC_NATIVE_CLIPBOARD_TEST: '1'
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked system_clipboard_image_roundtrip_when_explicitly_enabled
+      - name: Build signed candidate
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: npm run build -- --ci --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+      - name: Verify Windows subsystem
+        if: runner.os == 'Windows'
+        run: node scripts/verify-windows-gui.mjs src-tauri/target/${{ matrix.target }}/release/yunwei.exe
+      - name: Collect candidate packages
+        run: node scripts/release-manifest.mjs collect src-tauri/target/${{ matrix.target }}/release/bundle artifacts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-candidate-${{ matrix.os }}
+          path: desktop/artifacts/
+          if-no-files-found: error
