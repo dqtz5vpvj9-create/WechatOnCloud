@@ -515,7 +515,7 @@ export const api = {
       clearTimeout(timer);
     }
   },
-  clipboardEvents: async (id: string, signal: AbortSignal, changed: () => void): Promise<void> => {
+  clipboardEvents: async (id: string, signal: AbortSignal, changed: () => void, ready?: () => void): Promise<void> => {
     const res = await apiFetch(`/api/instances/${id}/clipboard-events`, {
       credentials: 'same-origin', cache: 'no-store', headers: viewerHeader, signal,
     });
@@ -531,7 +531,10 @@ export const api = {
         if (pending.length > 4096) throw new Error('剪贴板事件格式无效');
         const messages = pending.split('\n\n');
         pending = messages.pop() || '';
-        for (const message of messages) if (message.split('\n').includes('event: changed')) changed();
+        for (const message of messages) {
+          if (message.split('\n').includes('event: changed')) changed();
+          else if (message === ': keepalive') ready?.();
+        }
       }
     } finally { reader.releaseLock(); }
   },

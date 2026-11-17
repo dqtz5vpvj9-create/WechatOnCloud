@@ -80,12 +80,15 @@ export function installAutomaticImageCopy(win: Window, id: string, update: (stat
     });
   };
   const watch = async () => {
+    let retry = 1500;
     while (active) {
-      try { await api.clipboardEvents(id, controller.signal, changed); } catch { /* reconnect while this desktop is open */ }
+      let connected = false;
+      try { await api.clipboardEvents(id, controller.signal, changed, () => { connected = true; }); } catch { /* reconnect while this desktop is open */ }
       if (!active) break;
+      retry = connected ? 1500 : Math.min(retry * 2, 30_000);
       await new Promise<void>(resolve => {
         const done = () => { window.clearTimeout(timer); controller.signal.removeEventListener('abort', done); resolve(); };
-        const timer = window.setTimeout(done, 1500);
+        const timer = window.setTimeout(done, retry);
         controller.signal.addEventListener('abort', done, { once: true });
       });
     }
