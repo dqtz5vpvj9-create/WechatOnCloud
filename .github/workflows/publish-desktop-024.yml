@@ -1,0 +1,35 @@
+name: publish-desktop-024
+on:
+  push:
+    branches: ['publish/desktop-v0.2.4']
+    paths: ['.github/workflows/publish-desktop-024.yml']
+permissions:
+  actions: read
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Retrieve verified signed candidates
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 44006221669
+          pattern: desktop-candidate-*
+          path: installers
+          merge-multiple: true
+      - name: Publish release and update channel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/tags/desktop-v0.2.4 | cut -f1)" = f973a173dcc452c4a395d66bd52c91bf393ddec3
+          test "$(gh run view 44006221669 --repo "$GITHUB_REPOSITORY" --json conclusion --jq .conclusion)" = success
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/44006221669" --jq .head_sha)" = 6223e6c3359de0cd959dad5aabbec505c6730a51
+          node desktop/scripts/release-manifest.mjs manifest installers 0.2.4 "$GITHUB_REPOSITORY"
+          gh release create desktop-v0.2.4 installers/* --repo "$GITHUB_REPOSITORY" --title '云微 0.2.4' --prerelease --notes-file .github/desktop-0.2.4-release.md
+          gh release upload desktop-stable installers/latest.json --repo "$GITHUB_REPOSITORY" --clobber
