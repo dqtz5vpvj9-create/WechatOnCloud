@@ -1,0 +1,88 @@
+name: finder-e2e
+on:
+  push:
+    branches: ['desktop/finder-e2e-20261118']
+    paths: ['.github/workflows/finder-e2e.yml']
+permissions:
+  contents: read
+jobs:
+  finder:
+    runs-on: macos-15-intel
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+      - name: Install dependencies and compile original drag handler
+        run: |
+          npm ci --prefix panel/web
+          npm ci --prefix desktop
+          panel/web/node_modules/.bin/esbuild scripts/finder-e2e/entry.ts --bundle --format=iife --outfile=scripts/finder-e2e/entry.js
+      - name: Point test build to isolated local service
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          source=Path('desktop/src-tauri/src/lib.rs')
+          text=source.read_text()
+          assert text.count('https://wechat.tail.lixinrui000.cn/') == 1
+          source.write_text(text.replace('https://wechat.tail.lixinrui000.cn/', 'http://127.0.0.1:19495/'))
+          conf=Path('desktop/src-tauri/tauri.conf.json')
+          data=json.loads(conf.read_text())
+          data['identifier']='cn.lixinrui.yunwei.findertest'
+          win=data['app']['windows'][0]
+          win.update(url='http://127.0.0.1:19495/',width=520,height=450,minWidth=450,minHeight=350)
+          data['bundle']['createUpdaterArtifacts']=False
+          conf.write_text(json.dumps(data,ensure_ascii=False,indent=2))
+          cap=Path('desktop/src-tauri/capabilities/taskbar.json')
+          data=json.loads(cap.read_text())
+          data['remote']['urls']=['http://127.0.0.1:19495/*']
+          cap.write_text(json.dumps(data,ensure_ascii=False,indent=2))
+          PY
+      - name: Build isolated app
+        working-directory: desktop
+        run: npm run build -- --debug --ci --target x86_64-apple-darwin --bundles app
+      - name: Drag file into real Finder window
+        shell: bash
+        run: |
+          set -euo pipefail
+          export WOC_FINDER_FIXTURE="$PWD/scripts/finder-e2e"
+          target="$RUNNER_TEMP/woc-finder-target"
+          mkdir -p "$target"
+          python3 scripts/finder-e2e/server.py >"$RUNNER_TEMP/server.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for i in {1..50}; do curl -fsS http://127.0.0.1:19495/ >/dev/null 2>&1 && break; sleep 0.2; done
+          open -n "$PWD/desktop/src-tauri/target/x86_64-apple-darwin/debug/bundle/macos/云微.app"
+          for i in {1..100}; do [ -f "$WOC_FINDER_FIXTURE/ready" ] && break; sleep 0.2; done
+          test -f "$WOC_FINDER_FIXTURE/ready"
+          osascript <<APPLESCRIPT
+          tell application "Finder"
+            activate
+            make new Finder window to POSIX file "$target"
+            set bounds of front window to {600, 100, 1010, 650}
+          end tell
+          tell application id "cn.lixinrui.yunwei.findertest" to activate
+          tell application "System Events"
+            set p to first application process whose bundle identifier is "cn.lixinrui.yunwei.findertest"
+            set position of front window of p to {0, 100}
+            set size of front window of p to {520, 450}
+          end tell
+          APPLESCRIPT
+          sleep 2
+          swift scripts/finder-e2e/drag.swift
+          for i in {1..120}; do [ -f "$target/woc-finder-test.txt" ] && break; sleep 0.25; done
+          if [ -f "$WOC_FINDER_FIXTURE/error" ]; then cat "$WOC_FINDER_FIXTURE/error"; exit 1; fi
+          test -f "$WOC_FINDER_FIXTURE/download-requested"
+          test -f "$target/woc-finder-test.txt"
+          printf 'woc-finder-integration-content\n' | cmp - "$target/woc-finder-test.txt"
+          test -f "$WOC_FINDER_FIXTURE/release"
+          echo 'Finder received the expected remote file.'
+
