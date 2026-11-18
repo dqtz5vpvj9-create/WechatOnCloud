@@ -49,13 +49,13 @@ jobs:
           server_pid=$!
           trap 'sudo kill "$server_pid" 2>/dev/null || true' EXIT
           for i in {1..50}; do curl --noproxy '*' --cacert "$RUNNER_TEMP/server.crt" -fsS https://wechat.tail.lixinrui000.cn/ >/dev/null 2>&1 && break; sleep 0.2; done
-          curl --noproxy '*' --cacert "$RUNNER_TEMP/server.crt" -fsS https://wechat.tail.lixinrui000.cn/ >/dev/null
+          curl --noproxy '*' --cacert "$RUNNER_TEMP/server.crt" -fsS https://wechat.tail.lixinrui000.cn/ >/dev/null || { cat "$RUNNER_TEMP/server.log"; exit 1; }
           app="$(find "$RUNNER_TEMP/published-app" -name '*.app' -type d -prune -print | head -n1)"
           test -n "$app"
           codesign --verify --deep --strict "$app"
           open -n "$app"
           for i in {1..100}; do [ -f "$WOC_FINDER_FIXTURE/ready" ] && break; sleep 0.2; done
-          test -f "$WOC_FINDER_FIXTURE/ready"
+          test -f "$WOC_FINDER_FIXTURE/ready" || { echo 'app did not load test page'; cat "$RUNNER_TEMP/server.log"; exit 1; }
           osascript <<APPLESCRIPT
           tell application "Finder"
             activate
@@ -71,6 +71,7 @@ jobs:
           APPLESCRIPT
           sleep 2
           swift scripts/finder-e2e/drag-release.swift
+          screencapture -x "$RUNNER_TEMP/finder-drag.png" || true
           for i in {1..120}; do [ -f "$target/woc-finder-test.txt" ] && break; sleep 0.25; done
           if [ -f "$WOC_FINDER_FIXTURE/error" ]; then cat "$WOC_FINDER_FIXTURE/error"; exit 1; fi
           test -f "$WOC_FINDER_FIXTURE/download-requested"
@@ -79,3 +80,9 @@ jobs:
           test -f "$WOC_FINDER_FIXTURE/release"
           echo 'Published app delivered the expected file to Finder.'
 
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: finder-release-test-evidence
+          path: ${{ runner.temp }}/finder-drag.png
+          if-no-files-found: ignore
