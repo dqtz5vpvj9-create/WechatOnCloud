@@ -9,10 +9,10 @@ event(.mouseMoved, 350, 300)
 usleep(200_000)
 event(.leftMouseDown, 350, 300)
 usleep(350_000)
-for i in 1...120 {
+for i in 1...154 {
     event(.leftMouseDragged, 350 + CGFloat(i) * 5.0, 300)
     usleep(35_000)
 }
 usleep(500_000)
-event(.leftMouseUp, 950, 300)
+event(.leftMouseUp, 1120, 300)
 
