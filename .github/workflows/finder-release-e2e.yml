@@ -1,0 +1,81 @@
+name: finder-release-e2e
+on:
+  push:
+    branches: ['desktop/finder-release-e2e-20261118']
+    paths: ['.github/workflows/finder-release-e2e.yml']
+permissions:
+  contents: read
+jobs:
+  finder:
+    runs-on: macos-15-intel
+    timeout-minutes: 50
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Compile deployed drag handler
+        run: |
+          npm ci --prefix panel/web
+          panel/web/node_modules/.bin/esbuild scripts/finder-e2e/entry.ts --bundle --format=iife --outfile=scripts/finder-e2e/entry.js
+      - name: Wait for 0.2.5 and verify published app archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in {1..90}; do
+            if gh release view desktop-v0.2.5 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then break; fi
+            sleep 20
+          done
+          gh release view desktop-v0.2.5 --repo "$GITHUB_REPOSITORY" >/dev/null
+          gh release download desktop-v0.2.5 --repo "$GITHUB_REPOSITORY" --pattern app.tar.gz --dir "$RUNNER_TEMP"
+          expected="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/desktop-v0.2.5" --jq '.assets[] | select(.name=="app.tar.gz") | .digest' | sed 's/^sha256://')"
+          actual="$(shasum -a 256 "$RUNNER_TEMP/app.tar.gz" | cut -d ' ' -f1)"
+          test -n "$expected" && test "$actual" = "$expected"
+          mkdir -p "$RUNNER_TEMP/published-app"
+          tar -xzf "$RUNNER_TEMP/app.tar.gz" -C "$RUNNER_TEMP/published-app"
+      - name: Exercise published app with real Finder
+        shell: bash
+        run: |
+          set -euo pipefail
+          export WOC_FINDER_FIXTURE="$PWD/scripts/finder-e2e"
+          target="$RUNNER_TEMP/woc-finder-target"
+          mkdir -p "$target"
+          openssl req -x509 -nodes -newkey rsa:2048 -days 1 -keyout "$RUNNER_TEMP/server.key" -out "$RUNNER_TEMP/server.crt" -subj '/CN=wechat.tail.lixinrui000.cn' -addext 'subjectAltName=DNS:wechat.tail.lixinrui000.cn' -addext 'basicConstraints=critical,CA:TRUE' >/dev/null 2>&1
+          sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$RUNNER_TEMP/server.crt"
+          echo '127.0.0.1 wechat.tail.lixinrui000.cn' | sudo tee -a /etc/hosts >/dev/null
+          sudo env WOC_FINDER_FIXTURE="$WOC_FINDER_FIXTURE" WOC_FINDER_TLS_CERT="$RUNNER_TEMP/server.crt" WOC_FINDER_TLS_KEY="$RUNNER_TEMP/server.key" python3 scripts/finder-e2e/server.py >"$RUNNER_TEMP/server.log" 2>&1 &
+          server_pid=$!
+          trap 'sudo kill "$server_pid" 2>/dev/null || true' EXIT
+          for i in {1..50}; do curl --noproxy '*' --cacert "$RUNNER_TEMP/server.crt" -fsS https://wechat.tail.lixinrui000.cn/ >/dev/null 2>&1 && break; sleep 0.2; done
+          curl --noproxy '*' --cacert "$RUNNER_TEMP/server.crt" -fsS https://wechat.tail.lixinrui000.cn/ >/dev/null
+          app="$(find "$RUNNER_TEMP/published-app" -name '*.app' -type d -prune -print | head -n1)"
+          test -n "$app"
+          codesign --verify --deep --strict "$app"
+          open -n "$app"
+          for i in {1..100}; do [ -f "$WOC_FINDER_FIXTURE/ready" ] && break; sleep 0.2; done
+          test -f "$WOC_FINDER_FIXTURE/ready"
+          osascript <<APPLESCRIPT
+          tell application "Finder"
+            activate
+            make new Finder window to POSIX file "$target"
+            set bounds of front window to {900, 100, 1300, 650}
+          end tell
+          tell application id "cn.lixinrui.yunwei" to activate
+          tell application "System Events"
+            set p to first application process whose bundle identifier is "cn.lixinrui.yunwei"
+            set position of front window of p to {0, 100}
+            set size of front window of p to {900, 600}
+          end tell
+          APPLESCRIPT
+          sleep 2
+          swift scripts/finder-e2e/drag-release.swift
+          for i in {1..120}; do [ -f "$target/woc-finder-test.txt" ] && break; sleep 0.25; done
+          if [ -f "$WOC_FINDER_FIXTURE/error" ]; then cat "$WOC_FINDER_FIXTURE/error"; exit 1; fi
+          test -f "$WOC_FINDER_FIXTURE/download-requested"
+          test -f "$target/woc-finder-test.txt"
+          printf 'woc-finder-integration-content\n' | cmp - "$target/woc-finder-test.txt"
+          test -f "$WOC_FINDER_FIXTURE/release"
+          echo 'Published app delivered the expected file to Finder.'
+

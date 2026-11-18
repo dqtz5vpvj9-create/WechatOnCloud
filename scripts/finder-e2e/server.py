@@ -3,6 +3,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 import json
 import os
+import ssl
 
 ROOT = Path(os.environ['WOC_FINDER_FIXTURE'])
 class Handler(BaseHTTPRequestHandler):
@@ -38,5 +39,11 @@ class Handler(BaseHTTPRequestHandler):
         return self.response(404, b'not found')
     def log_message(self, fmt, *args):
         pass
-ThreadingHTTPServer(('127.0.0.1', 19495), Handler).serve_forever()
+cert = os.environ.get('WOC_FINDER_TLS_CERT')
+server = ThreadingHTTPServer(('127.0.0.1', 443 if cert else 19495), Handler)
+if cert:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert, os.environ['WOC_FINDER_TLS_KEY'])
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+server.serve_forever()
 
