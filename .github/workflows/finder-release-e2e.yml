@@ -77,6 +77,7 @@ jobs:
           osascript -e 'tell application "Finder" to get {count of windows, bounds of front window, visible of front window}' || true
           osascript -e 'tell application "System Events" to get {name, position, size} of every window of process "Finder"' || true
           screencapture -x "$RUNNER_TEMP/finder-before.png" || true
+          echo 'Dropping inside the Finder folder content area.'
           swift scripts/finder-e2e/drag-release.swift
           screencapture -x "$RUNNER_TEMP/finder-drag.png" || true
           for i in {1..120}; do [ -f "$target/woc-finder-test.txt" ] && break; sleep 0.25; done
