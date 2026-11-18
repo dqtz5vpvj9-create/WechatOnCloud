@@ -1,0 +1,21 @@
+name: finder-probe
+on:
+  push:
+    branches: ['desktop/finder-probe-20261118']
+    paths: ['.github/workflows/finder-probe.yml']
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: macos-15-intel
+    timeout-minutes: 8
+    steps:
+      - name: Inspect macOS GUI test availability
+        shell: bash
+        run: |
+          set +e
+          /usr/bin/swift -e 'import AppKit; import ApplicationServices; print("AX_TRUSTED=\(AXIsProcessTrusted())"); print("SCREEN_COUNT=\(NSScreen.screens.count)"); print("SCREEN_CAPTURE=\(CGPreflightScreenCaptureAccess())")'
+          /usr/bin/osascript -e 'tell application "Finder" to activate' 2>&1
+          echo "FINDER_ACTIVATE_EXIT=$?"
+          /usr/bin/osascript -e 'tell application "System Events" to get name of first process whose frontmost is true' 2>&1
+          echo "SYSTEM_EVENTS_EXIT=$?"
