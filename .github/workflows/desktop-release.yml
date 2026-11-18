@@ -2,6 +2,7 @@ name: desktop-release
 on:
   push:
     tags: ['desktop-v*']
+    branches: ['desktop/filescreen-release-20261118']
 permissions:
   contents: read
 concurrency:
@@ -16,7 +17,7 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             bundles: nsis
-          - os: macos-15
+          - os: macos-15-intel
             target: universal-apple-darwin
             bundles: app,dmg
     runs-on: ${{ matrix.os }}
@@ -35,7 +36,7 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.os == 'macos-15' && 'aarch64-apple-darwin,x86_64-apple-darwin' || 'x86_64-pc-windows-msvc' }}
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || 'x86_64-pc-windows-msvc' }}
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
@@ -43,7 +44,7 @@ jobs:
       - run: npm ci
       - name: Validate release version and native logic
         run: |
-          node -e 'const c=require("./src-tauri/tauri.conf.json"); if(process.env.GITHUB_REF_NAME!==`desktop-v${c.version}`) throw Error("Tag/version mismatch")'
+          node -e 'const c=require("./src-tauri/tauri.conf.json"); if(process.env.GITHUB_REF_TYPE==="tag" && process.env.GITHUB_REF_NAME!==`desktop-v${c.version}`) throw Error("Tag/version mismatch")'
           cargo fmt --manifest-path src-tauri/Cargo.toml --check
           cargo test --manifest-path src-tauri/Cargo.toml --locked
       - name: Build signed updater packages
@@ -82,8 +83,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#desktop-v}"
+          version="$(node -p 'require("./desktop/src-tauri/tauri.conf.json").version')"
           node desktop/scripts/release-manifest.mjs manifest installers "$version" "$GITHUB_REPOSITORY"
-          gh release create "$GITHUB_REF_NAME" installers/* --repo "$GITHUB_REPOSITORY" --title "云微 $version" --prerelease --notes 'Windows 和 macOS 桌面安装包。首次安装本版后，可在应用内更新。macOS 当前为临时签名，首次安装仍需系统放行。'
+          gh release create "desktop-v$version" installers/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "云微 $version" --prerelease --notes '加入 macOS 文件拖出桥接。构建与自动测试通过，Finder 端到端操作仍需验证。macOS 包使用临时签名，未公证。'
           gh release view desktop-stable --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create desktop-stable --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title '云微桌面更新通道' --prerelease --notes '应用内更新使用的签名清单；安装包见带版本号的云微桌面 Release。'
           gh release upload desktop-stable installers/latest.json --repo "$GITHUB_REPOSITORY" --clobber
+

@@ -1,6 +1,6 @@
 [package]
 name = "yunwei"
-version = "0.2.4"
+version = "0.2.5"
 description = "云微桌面客户端"
 edition = "2021"
 license = "MIT"
@@ -29,3 +29,4 @@ tokio = { version = "1", features = ["time"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-plugin-dragout = "0.2"
+

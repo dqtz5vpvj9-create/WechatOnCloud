@@ -5680,7 +5680,7 @@ dependencies = [
 
 [[package]]
 name = "yunwei"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -5931,3 +5931,4 @@ dependencies = [
  "syn 3.0.9",
  "winnow 1.0.4",
 ]
+
