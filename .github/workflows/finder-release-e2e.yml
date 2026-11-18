@@ -74,9 +74,15 @@ jobs:
           end tell
           APPLESCRIPT
           sleep 2
+          osascript -e 'tell application "Finder" to get {count of windows, bounds of front window, visible of front window}' || true
+          osascript -e 'tell application "System Events" to get {name, position, size} of every window of process "Finder"' || true
+          screencapture -x "$RUNNER_TEMP/finder-before.png" || true
           swift scripts/finder-e2e/drag-release.swift
           screencapture -x "$RUNNER_TEMP/finder-drag.png" || true
           for i in {1..120}; do [ -f "$target/woc-finder-test.txt" ] && break; sleep 0.25; done
+          echo 'FIXTURE MARKERS:'
+          ls -l "$WOC_FINDER_FIXTURE" "$target" "$HOME/Desktop" || true
+          cat "$RUNNER_TEMP/server.log" || true
           if [ -f "$WOC_FINDER_FIXTURE/error" ]; then cat "$WOC_FINDER_FIXTURE/error"; exit 1; fi
           test -f "$WOC_FINDER_FIXTURE/download-requested"
           test -f "$target/woc-finder-test.txt"
@@ -88,5 +94,5 @@ jobs:
         if: always()
         with:
           name: finder-release-test-evidence
-          path: ${{ runner.temp }}/finder-drag.png
+          path: ${{ runner.temp }}/finder-*.png
           if-no-files-found: ignore
